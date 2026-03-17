@@ -58,18 +58,46 @@ _PROB_TABLES: dict[str, list] = {
     "XRP": _PROB_TABLE_XRP,
 }
 
-# Rebate applied to effective threshold (0.10% maker rebate adjustment)
-_REBATE_ADJUSTMENT = 0.001
-
-
 def _delta_to_prob(abs_delta: float, asset: str) -> float:
     table = _PROB_TABLES.get(asset, _PROB_TABLE_BTC)
+    previous_threshold = 0.0
+    previous_prob = 0.50
     for threshold, prob in table:
-        if abs_delta < threshold:
-            return prob
+        if abs_delta <= threshold:
+            if threshold == float("inf"):
+                return prob
+            span = max(threshold - previous_threshold, 1e-9)
+            progress = (abs_delta - previous_threshold) / span
+            return previous_prob + ((prob - previous_prob) * progress)
+        previous_threshold = threshold
+        previous_prob = prob
     return table[-1][1]
 
 
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def _confidence_scale(window: WindowState, config: Settings) -> float:
+    total_liquidity = float(window.liquidity_yes + window.liquidity_no)
+    liquidity_ratio = total_liquidity / max(config.min_market_liquidity, 1.0)
+    liquidity_factor = _clamp(liquidity_ratio, 0.0, 1.5)
+
+    entry_span = max(config.entry_window_seconds - config.min_seconds_remaining, 1)
+    time_progress = _clamp(
+        (config.entry_window_seconds - float(window.seconds_remaining)) / entry_span,
+        0.0,
+        1.0,
+    )
+
+    overround = max(
+        0.0,
+        float(window.current_yes_price + window.current_no_price - Decimal("1.0")),
+    )
+
+    scale = 0.60 + (0.20 * min(liquidity_factor, 1.0)) + (0.20 * time_progress)
+    scale -= min(overround * 1.5, 0.25)
+    return _clamp(scale, 0.35, 1.0)
 @dataclass
 class SignalResult:
     edge: float
@@ -106,7 +134,9 @@ def compute(
     delta = float((current_price - open_price) / open_price)
     abs_delta = abs(delta)
 
-    true_prob = _delta_to_prob(abs_delta, resolved_asset)
+    base_true_prob = _delta_to_prob(abs_delta, resolved_asset)
+    confidence_scale = _confidence_scale(window, config)
+    true_prob = 0.5 + ((base_true_prob - 0.5) * confidence_scale)
 
     if delta >= 0:
         direction = Direction.UP
@@ -122,10 +152,16 @@ def compute(
     if market_implied_prob <= 0 or market_implied_prob >= 1:
         return None
 
-    edge = true_prob - market_implied_prob
+    overround = max(
+        0.0,
+        float(window.current_yes_price + window.current_no_price - Decimal("1.0")),
+    )
+    edge = true_prob - market_implied_prob - (overround * 0.25)
 
-    # Reduce threshold slightly to account for 0.10% maker rebate
-    effective_threshold = config.edge_threshold - _REBATE_ADJUSTMENT
+    effective_threshold = max(
+        0.0,
+        config.edge_threshold - (config.maker_rebate_bps_assumption / 10000.0),
+    )
 
     in_entry_window = (
         window.seconds_remaining <= config.entry_window_seconds

@@ -8,7 +8,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import Optional
 
 import structlog
@@ -19,12 +19,13 @@ from ..signal.calculator import SignalResult
 
 logger = structlog.get_logger(__name__)
 
-_TICK = Decimal("0.01")
+_DEFAULT_TICK = Decimal("0.01")
 _MAX_MAKER_PRICE = Decimal("0.97")
 _MIN_MAKER_PRICE = Decimal("0.02")
-_MAKER_REBATE_RATE = Decimal("0.001")   # 0.10% rebate on filled maker orders
 _REPOST_POLL_SECONDS = 3
 _SHADOW_POLL_SECONDS = 1.0
+_SHARE_QUANTUM = Decimal("0.01")
+_COST_QUANTUM = Decimal("0.0001")
 
 
 @dataclass
@@ -35,7 +36,8 @@ class TradeResult:
     side: str                        # "YES" or "NO"
     token_id: str
     asset: str                       # "BTC", "ETH", "SOL", "XRP"
-    bet_size: Decimal
+    bet_size: Decimal                # total stake in USDC
+    share_quantity: Decimal
     limit_price: Decimal
     filled: bool
     fill_price: Optional[Decimal]
@@ -71,20 +73,28 @@ class Trader:
             return self._client
         try:
             from py_clob_client.client import ClobClient
-            from py_clob_client.clob_types import ApiCreds
 
-            self._client = ClobClient(
-                host="https://clob.polymarket.com",
-                key=self._config.polymarket_wallet_address,
-                chain_id=137,
-                creds=ApiCreds(
-                    api_key=self._config.polymarket_api_key,
-                    api_secret=self._config.polymarket_secret,
-                    api_passphrase=self._config.polymarket_passphrase,
-                ),
-                signature_type=2,
-                funder=self._config.polymarket_wallet_address,
-            )
+            if self._config.paper_trade:
+                self._client = ClobClient(
+                    host="https://clob.polymarket.com",
+                    chain_id=137,
+                    signature_type=2,
+                )
+            else:
+                from py_clob_client.clob_types import ApiCreds
+
+                self._client = ClobClient(
+                    host="https://clob.polymarket.com",
+                    key=self._config.polymarket_wallet_address,
+                    chain_id=137,
+                    creds=ApiCreds(
+                        api_key=self._config.polymarket_api_key,
+                        api_secret=self._config.polymarket_secret,
+                        api_passphrase=self._config.polymarket_passphrase,
+                    ),
+                    signature_type=2,
+                    funder=self._config.polymarket_wallet_address,
+                )
         except Exception as exc:
             logger.error("trader.client_init_error", error=str(exc))
             raise
@@ -122,33 +132,60 @@ class Trader:
         self,
         window: WindowState,
         signal: SignalResult,
-        bet_size: Decimal,
+        stake_budget: Decimal,
     ) -> TradeResult:
         paper = self._config.paper_trade
         token_id = signal.token_id
         asset = signal.asset
 
-        # ── STEP 1: Balance check (live only) ────────────────────────────
-        if not paper:
-            if not self._check_balance(bet_size):
-                return self._no_fill(window, signal, bet_size, "insufficient_balance")
-
-        # ── STEP 2: Calculate initial maker price ─────────────────────────
-        maker_price = self._compute_maker_price(token_id, paper)
+        # ── STEP 1: Calculate initial maker price and stake geometry ─────
+        maker_price = self._compute_maker_price(token_id, signal, window)
         if maker_price is None:
-            return self._no_fill(window, signal, bet_size, "no_orderbook")
+            return self._no_fill(window, signal, Decimal("0"), "no_orderbook")
+
+        share_quantity = self._compute_share_quantity(stake_budget, maker_price)
+        if share_quantity <= 0:
+            return self._no_fill(window, signal, Decimal("0"), "invalid_order_size")
+
+        order_cost = self._compute_order_cost(share_quantity, maker_price)
+
+        # ── STEP 2: Balance check (live only) ────────────────────────────
+        if not paper:
+            if not self._check_balance(order_cost):
+                return self._no_fill(window, signal, order_cost, "insufficient_balance")
 
         # ── STEP 3 + 4: Place order, then cancel/repost loop ─────────────
         if paper:
-            filled, fill_price, repost_count, maker_price = self._paper_execute(
-                window, signal, bet_size, maker_price
+            (
+                filled,
+                fill_price,
+                repost_count,
+                maker_price,
+                share_quantity,
+                order_cost,
+            ) = self._paper_execute(
+                window,
+                signal,
+                stake_budget,
+                maker_price,
             )
         else:
-            filled, fill_price, repost_count, maker_price = self._live_execute(
-                window, signal, bet_size, maker_price, token_id
+            (
+                filled,
+                fill_price,
+                repost_count,
+                maker_price,
+                share_quantity,
+                order_cost,
+            ) = self._live_execute(
+                window,
+                signal,
+                stake_budget,
+                maker_price,
+                token_id,
             )
 
-        rebate = bet_size * _MAKER_REBATE_RATE if filled else Decimal("0")
+        rebate = self._compute_rebate(order_cost) if filled else Decimal("0")
 
         result = TradeResult(
             trade_id=None,
@@ -157,7 +194,8 @@ class Trader:
             side=signal.trade_side,
             token_id=token_id,
             asset=asset,
-            bet_size=bet_size,
+            bet_size=order_cost,
+            share_quantity=share_quantity,
             limit_price=maker_price,
             filled=filled,
             fill_price=fill_price,
@@ -182,92 +220,168 @@ class Trader:
         self,
         window: WindowState,
         signal: SignalResult,
-        bet_size: Decimal,
+        stake_budget: Decimal,
         initial_maker_price: Decimal,
-    ) -> tuple[bool, Optional[Decimal], int, Decimal]:
+    ) -> tuple[bool, Optional[Decimal], int, Decimal, Decimal, Decimal]:
         """
-        100% Accurate Shadow Trading:
-        Mimics live execution by polling the real order book every 3s.
-        Only fills if the market price actually touches the virtual limit order.
+        Shadow-trade the live maker loop using the public order book.
+        Uses the same repost cadence and price logic as live execution.
         """
         token_id = signal.token_id
         maker_price = initial_maker_price
         max_reposts = self._config.max_reposts_per_window
-        stale_ticks = Decimal(str(self._config.repost_stale_ticks)) * _TICK
         cancel_at = self._config.cancel_at_seconds_remaining
         repost_count = 0
         filled = False
         fill_price: Optional[Decimal] = None
+        share_quantity = self._compute_share_quantity(stake_budget, maker_price)
+        order_cost = self._compute_order_cost(share_quantity, maker_price)
+        last_requote_check = time.monotonic()
+        client = self._get_client()
+        book = client.get_order_book(token_id)
+        tick_size = self._resolve_tick_size(book, window)
+        stale_ticks = Decimal(str(self._config.repost_stale_ticks)) * tick_size
+        better_ahead, same_level_ahead = self._estimate_queue_ahead(book, maker_price)
+        remaining_own = share_quantity
+        last_better_visible = better_ahead
+        last_same_visible = same_level_ahead
+        seen_trade_keys: set[str] = set()
 
         logger.info(
             "trader.paper_shadow_order_started",
             market_id=window.market_id,
             price=str(maker_price),
-            size=str(bet_size),
+            shares=str(share_quantity),
+            cost=str(order_cost),
+            queue_ahead=str(better_ahead + same_level_ahead),
         )
 
         try:
             while True:
-                # 1. High-frequency sleep
                 time.sleep(_SHADOW_POLL_SECONDS)
-                
-                # Check if window expired or time to cancel
+
                 secs_left = window.seconds_remaining
                 if secs_left <= cancel_at:
                     logger.info("trader.paper_shadow_expired", market_id=window.market_id)
                     break
 
-                # 2. Fetch real-time market state
-                client = self._get_client()
                 book = client.get_order_book(token_id)
                 if not book.asks or not book.bids:
                     break
-                
-                best_ask = Decimal(str(book.asks[0].price))
-                best_bid = Decimal(str(book.bids[0].price))
 
-                # 3. Fill check A: Does the best ask reach our bid?
+                best_ask = Decimal(str(book.asks[0].price))
+                tick_size = self._resolve_tick_size(book, window)
+                stale_ticks = Decimal(str(self._config.repost_stale_ticks)) * tick_size
+                better_visible, same_visible = self._estimate_queue_ahead(
+                    book,
+                    maker_price,
+                )
+
+                if better_visible > last_better_visible:
+                    better_ahead += better_visible - last_better_visible
+                if better_visible < last_better_visible:
+                    better_ahead = max(
+                        better_ahead - (last_better_visible - better_visible),
+                        Decimal("0"),
+                    )
+                last_better_visible = better_visible
+
+                if same_visible < last_same_visible:
+                    consumed_same = min(
+                        same_level_ahead,
+                        last_same_visible - same_visible,
+                    )
+                    same_level_ahead = max(same_level_ahead - consumed_same, Decimal("0"))
+                last_same_visible = same_visible
+
                 if best_ask <= maker_price:
                     filled = True
-                
-                # 4. Fill check B: Did a trade happen at our price? (The most accurate check)
+                    remaining_own = Decimal("0")
+
                 if not filled:
                     try:
-                        # Most py-clob-client versions support get_trades
                         trades = client.get_trades(token_id=token_id)
-                        if trades and any(Decimal(str(t.get('price', 1))) <= maker_price for t in trades):
-                            filled = True
+                        traded_volume = self._consume_recent_fill_volume(
+                            trades,
+                            maker_price,
+                            seen_trade_keys,
+                        )
+                        if traded_volume > 0:
+                            if better_ahead > 0:
+                                consume_better = min(better_ahead, traded_volume)
+                                better_ahead -= consume_better
+                                traded_volume -= consume_better
+                            if traded_volume > 0 and same_level_ahead > 0:
+                                consume_same = min(same_level_ahead, traded_volume)
+                                same_level_ahead -= consume_same
+                                traded_volume -= consume_same
+                            if traded_volume > 0 and better_ahead <= 0 and same_level_ahead <= 0:
+                                remaining_own = max(remaining_own - traded_volume, Decimal("0"))
                     except Exception:
-                        pass # Fallback to book polling if trades API is flaky
+                        pass
+
+                if remaining_own <= 0:
+                    filled = True
 
                 if filled:
                     fill_price = maker_price
-                    logger.info("trader.paper_shadow_filled", market_id=window.market_id, price=str(fill_price))
+                    order_cost = self._compute_order_cost(share_quantity, fill_price)
+                    logger.info(
+                        "trader.paper_shadow_filled",
+                        market_id=window.market_id,
+                        price=str(fill_price),
+                        shares=str(share_quantity),
+                        cost=str(order_cost),
+                    )
                     break
 
-                # 5. Virtual Cancel/Repost logic
-                ideal_price = self._compute_maker_price(token_id, paper=False)
+                if (time.monotonic() - last_requote_check) < _REPOST_POLL_SECONDS:
+                    continue
+                last_requote_check = time.monotonic()
+
+                ideal_price = self._compute_maker_price(token_id, signal, window)
                 if ideal_price is None:
                     break
 
                 if abs(maker_price - ideal_price) > stale_ticks:
                     if repost_count >= max_reposts:
-                        logger.info("trader.paper_shadow_max_reposts", market_id=window.market_id)
+                        logger.info(
+                            "trader.paper_shadow_max_reposts",
+                            market_id=window.market_id,
+                        )
                         break
-                    
+
                     maker_price = ideal_price
+                    share_quantity = self._compute_share_quantity(stake_budget, maker_price)
+                    order_cost = self._compute_order_cost(share_quantity, maker_price)
+                    if share_quantity <= 0:
+                        break
+                    book = client.get_order_book(token_id)
+                    tick_size = self._resolve_tick_size(book, window)
+                    stale_ticks = Decimal(str(self._config.repost_stale_ticks)) * tick_size
+                    better_ahead, same_level_ahead = self._estimate_queue_ahead(
+                        book,
+                        maker_price,
+                    )
+                    last_better_visible = better_ahead
+                    last_same_visible = same_level_ahead
+                    remaining_own = share_quantity
+                    seen_trade_keys.clear()
                     repost_count += 1
                     logger.info(
                         "trader.paper_shadow_reposted",
                         market_id=window.market_id,
                         new_price=str(maker_price),
-                        reposts=repost_count
+                        reposts=repost_count,
+                        shares=str(share_quantity),
+                        cost=str(order_cost),
+                        queue_ahead=str(better_ahead + same_level_ahead),
                     )
 
         except Exception as exc:
             logger.error("trader.paper_shadow_error", error=str(exc))
 
-        return filled, fill_price, repost_count, maker_price
+        return filled, fill_price, repost_count, maker_price, share_quantity, order_cost
 
     # ── Live order execution ──────────────────────────────────────────────
 
@@ -275,39 +389,48 @@ class Trader:
         self,
         window: WindowState,
         signal: SignalResult,
-        bet_size: Decimal,
+        stake_budget: Decimal,
         initial_maker_price: Decimal,
         token_id: str,
-    ) -> tuple[bool, Optional[Decimal], int, Decimal]:
+    ) -> tuple[bool, Optional[Decimal], int, Decimal, Decimal, Decimal]:
         """
         Place a GTC postOnly order, then poll every 3 s.
         Cancels and reposts if price moves > REPOST_STALE_TICKS ticks.
         Always cancels at T-CANCEL_AT_SECONDS_REMAINING seconds.
-        Returns (filled, fill_price, repost_count, final_maker_price).
+        Returns fill state plus the final maker price, shares, and cost.
         """
         maker_price = initial_maker_price
         max_reposts = self._config.max_reposts_per_window
-        stale_ticks = Decimal(str(self._config.repost_stale_ticks)) * _TICK
         cancel_at = self._config.cancel_at_seconds_remaining
         repost_count = 0
         order_id: Optional[str] = None
         filled = False
         fill_price: Optional[Decimal] = None
+        share_quantity = self._compute_share_quantity(stake_budget, maker_price)
+        order_cost = self._compute_order_cost(share_quantity, maker_price)
+        stale_ticks = Decimal(str(self._config.repost_stale_ticks)) * (
+            window.minimum_tick_size if window.minimum_tick_size > 0 else _DEFAULT_TICK
+        )
 
         try:
             # Place initial order
-            order_id, rejected = self._post_maker_order(token_id, bet_size, maker_price)
+            order_id, rejected = self._post_maker_order(
+                token_id,
+                share_quantity,
+                maker_price,
+            )
             if rejected:
                 logger.info("trader.postonly_rejected", token_id=token_id)
-                return False, None, 0, maker_price
+                return False, None, 0, maker_price, share_quantity, order_cost
             if order_id is None:
-                return False, None, 0, maker_price
+                return False, None, 0, maker_price, share_quantity, order_cost
 
             logger.info(
                 "trader.maker_order_placed",
                 order_id=order_id,
                 price=str(maker_price),
-                size=str(bet_size),
+                shares=str(share_quantity),
+                cost=str(order_cost),
             )
 
             # ── Cancel/repost loop ────────────────────────────────────────
@@ -323,10 +446,11 @@ class Trader:
                 filled = self._is_filled(order_id)
                 if filled:
                     fill_price = maker_price
+                    order_cost = self._compute_order_cost(share_quantity, fill_price)
                     break
 
                 # Check staleness
-                new_price = self._compute_maker_price(token_id, paper=False)
+                new_price = self._compute_maker_price(token_id, signal, window)
                 if new_price is None:
                     break
                 if abs(maker_price - new_price) > stale_ticks:
@@ -338,8 +462,14 @@ class Trader:
                         break
                     self._cancel_order(order_id)
                     maker_price = new_price
+                    share_quantity = self._compute_share_quantity(stake_budget, maker_price)
+                    order_cost = self._compute_order_cost(share_quantity, maker_price)
+                    if share_quantity <= 0:
+                        break
                     order_id, rejected = self._post_maker_order(
-                        token_id, bet_size, maker_price
+                        token_id,
+                        share_quantity,
+                        maker_price,
                     )
                     if rejected or order_id is None:
                         order_id = None
@@ -349,6 +479,8 @@ class Trader:
                         "trader.order_reposted",
                         repost_count=repost_count,
                         new_price=str(maker_price),
+                        shares=str(share_quantity),
+                        cost=str(order_cost),
                     )
 
         except Exception as exc:
@@ -359,7 +491,7 @@ class Trader:
             if order_id and not filled:
                 self._cancel_order(order_id)
 
-        return filled, fill_price, repost_count, maker_price
+        return filled, fill_price, repost_count, maker_price, share_quantity, order_cost
 
     # ── py-clob-client helpers ─────────────────────────────────────────────
 
@@ -372,7 +504,7 @@ class Trader:
                 params=BalanceAllowanceParams(asset_type=AssetType.USDC)
             )
             usdc_balance = int(balance_data["balance"]) / 1e6
-            required = float(bet_size) * 1.05
+            required = float(bet_size) * 1.01
             if usdc_balance < required:
                 logger.warning(
                     "trader.insufficient_balance",
@@ -386,11 +518,15 @@ class Trader:
             return False
 
     def _compute_maker_price(
-        self, token_id: str, paper: bool
+        self,
+        token_id: str,
+        signal: SignalResult,
+        window: WindowState,
     ) -> Optional[Decimal]:
         """
-        Fetch orderbook and compute a maker bid price inside the spread.
-        Returns None if the book is missing or one-sided.
+        Fetch the order book and place a maker bid inside the spread.
+        Quote aggression increases with edge strength and time urgency but
+        never crosses the best ask.
         """
         try:
             client = self._get_client()
@@ -399,26 +535,193 @@ class Trader:
                 return None
             best_ask = Decimal(str(book.asks[0].price))
             best_bid = Decimal(str(book.bids[0].price))
+            tick_size = self._resolve_tick_size(book, window)
 
-            # Post one tick inside the spread
-            maker_price = min(best_bid + _TICK, best_ask - _TICK)
+            spread = best_ask - best_bid
+            if spread <= 0:
+                maker_price = best_ask - tick_size
+            else:
+                spread_ticks = int(
+                    (spread / tick_size).to_integral_value(rounding=ROUND_DOWN)
+                )
+                edge_floor = max(self._config.edge_threshold, 0.01)
+                target_edge = max(
+                    self._config.target_edge_for_max_size,
+                    edge_floor + 0.01,
+                )
+                edge_progress = self._clamp(
+                    (signal.edge - edge_floor) / (target_edge - edge_floor),
+                    0.0,
+                    1.0,
+                )
+                urgency = self._clamp(
+                    (
+                        float(self._config.entry_window_seconds)
+                        - self._clamp(
+                            float(window.seconds_remaining),
+                            float(self._config.cancel_at_seconds_remaining),
+                            float(self._config.entry_window_seconds),
+                        )
+                    )
+                    / max(
+                        float(
+                            self._config.entry_window_seconds
+                            - self._config.cancel_at_seconds_remaining
+                        ),
+                        1.0,
+                    ),
+                    0.0,
+                    1.0,
+                )
+
+                max_inside_ticks = max(1, min(self._config.max_maker_aggression_ticks, max(spread_ticks - 1, 1)))
+                desired_ticks = 1 + int(
+                    (max_inside_ticks - 1) * (0.55 * edge_progress + 0.45 * urgency)
+                )
+                maker_price = best_bid + (tick_size * max(1, desired_ticks))
+
             maker_price = max(maker_price, _MIN_MAKER_PRICE)
             maker_price = min(maker_price, _MAX_MAKER_PRICE)
-            maker_price = round(maker_price, 2)
+            maker_price = self._quantize_to_tick(maker_price, tick_size)
 
-            # Ensure we are not crossing the spread
             if maker_price >= best_ask:
-                maker_price = round(best_ask - _TICK, 2)
+                maker_price = self._quantize_to_tick(best_ask - tick_size, tick_size)
 
+            if maker_price < _MIN_MAKER_PRICE or maker_price <= 0:
+                return None
             return maker_price
         except Exception as exc:
             logger.error("trader.compute_maker_price_error", error=str(exc))
             return None
 
+    def _resolve_tick_size(self, book, window: WindowState) -> Decimal:
+        tick = getattr(book, "tick_size", None)
+        if tick is None:
+            tick = getattr(book, "tickSize", None)
+        try:
+            resolved = Decimal(str(tick)) if tick is not None else window.minimum_tick_size
+        except Exception:
+            resolved = window.minimum_tick_size
+        if resolved <= 0:
+            resolved = window.minimum_tick_size
+        if resolved <= 0:
+            resolved = _DEFAULT_TICK
+        return resolved
+
+    def _quantize_to_tick(self, value: Decimal, tick_size: Decimal) -> Decimal:
+        ticks = (value / tick_size).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        return (ticks * tick_size).quantize(tick_size, rounding=ROUND_HALF_UP)
+
+    def _estimate_queue_ahead(
+        self,
+        book,
+        maker_price: Decimal,
+    ) -> tuple[Decimal, Decimal]:
+        better = Decimal("0")
+        same = Decimal("0")
+        for level in getattr(book, "bids", []) or []:
+            price = Decimal(str(level.price))
+            size = self._extract_level_size(level)
+            if price > maker_price:
+                better += size
+            elif price == maker_price:
+                same += size
+        return better, same
+
+    def _extract_level_size(self, level) -> Decimal:
+        for attr in ("size", "amount", "quantity"):
+            raw = getattr(level, attr, None)
+            if raw is None and isinstance(level, dict):
+                raw = level.get(attr)
+            if raw is not None:
+                try:
+                    return Decimal(str(raw))
+                except Exception:
+                    return Decimal("0")
+        return Decimal("0")
+
+    def _consume_recent_fill_volume(
+        self,
+        trades,
+        maker_price: Decimal,
+        seen_trade_keys: set[str],
+    ) -> Decimal:
+        fill_volume = Decimal("0")
+        for trade in trades or []:
+            trade_key = self._trade_key(trade)
+            if trade_key in seen_trade_keys:
+                continue
+            seen_trade_keys.add(trade_key)
+            trade_price = self._trade_price(trade)
+            if trade_price is None or trade_price > maker_price:
+                continue
+            fill_volume += self._trade_size(trade)
+        return fill_volume
+
+    def _trade_key(self, trade) -> str:
+        if isinstance(trade, dict):
+            for key in ("id", "tradeID", "transactionHash", "timestamp", "t"):
+                if key in trade:
+                    return str(trade[key])
+            return repr(sorted(trade.items()))
+        return repr(trade)
+
+    def _trade_price(self, trade) -> Optional[Decimal]:
+        raw = trade.get("price") if isinstance(trade, dict) else getattr(trade, "price", None)
+        if raw is None:
+            return None
+        try:
+            return Decimal(str(raw))
+        except Exception:
+            return None
+
+    def _trade_size(self, trade) -> Decimal:
+        if isinstance(trade, dict):
+            for key in ("size", "amount", "quantity"):
+                if key in trade:
+                    try:
+                        return Decimal(str(trade[key]))
+                    except Exception:
+                        return Decimal("0")
+        for attr in ("size", "amount", "quantity"):
+            raw = getattr(trade, attr, None)
+            if raw is not None:
+                try:
+                    return Decimal(str(raw))
+                except Exception:
+                    return Decimal("0")
+        return Decimal("0")
+
+    def _compute_share_quantity(
+        self,
+        stake_budget: Decimal,
+        price: Decimal,
+    ) -> Decimal:
+        if stake_budget <= 0 or price <= 0:
+            return Decimal("0")
+        shares = (stake_budget / price).quantize(_SHARE_QUANTUM, rounding=ROUND_DOWN)
+        return max(shares, Decimal("0"))
+
+    def _compute_order_cost(self, share_quantity: Decimal, price: Decimal) -> Decimal:
+        if share_quantity <= 0 or price <= 0:
+            return Decimal("0")
+        return (share_quantity * price).quantize(_COST_QUANTUM, rounding=ROUND_HALF_UP)
+
+    def _compute_rebate(self, order_cost: Decimal) -> Decimal:
+        assumed_rate = Decimal(str(self._config.maker_rebate_bps_assumption)) / Decimal("10000")
+        return (order_cost * assumed_rate).quantize(
+            _COST_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+
+    @staticmethod
+    def _clamp(value: float, lower: float, upper: float) -> float:
+        return max(lower, min(upper, value))
+
     def _post_maker_order(
         self,
         token_id: str,
-        bet_size: Decimal,
+        share_quantity: Decimal,
         maker_price: Decimal,
     ) -> tuple[Optional[str], bool]:
         """
@@ -432,7 +735,7 @@ class Trader:
             client = self._get_client()
             order_args = OrderArgs(
                 price=float(maker_price),
-                size=float(bet_size),
+                size=float(share_quantity),
                 side=BUY,
                 token_id=token_id,
             )
@@ -516,7 +819,7 @@ class Trader:
             )
             if won:
                 pnl = (
-                    float(result.bet_size) * (1.0 / float(result.limit_price) - 1.0)
+                    float(result.share_quantity) * (1.0 - float(result.limit_price))
                     + float(result.maker_rebate_earned)
                 )
                 return "WIN", pnl
@@ -543,6 +846,7 @@ class Trader:
             token_id=signal.token_id,
             asset=signal.asset,
             bet_size=bet_size,
+            share_quantity=Decimal("0"),
             limit_price=Decimal("0"),
             filled=False,
             fill_price=None,

@@ -1,6 +1,6 @@
 # Polymarket 5-Minute BTC Window Trading Bot
 
-A fully automated, production-ready trading bot that monitors Polymarket's 5-minute Bitcoin Up/Down prediction markets, streams live BTC prices from Binance and Coinbase simultaneously, and fires Fill-or-Kill limit orders when it detects a statistical edge.
+A fully automated, production-ready trading bot that monitors Polymarket's 5-minute Bitcoin Up/Down prediction markets, streams live BTC prices from Binance and Coinbase simultaneously, and works maker orders dynamically when it detects a statistical edge.
 
 > **Start with `PAPER_TRADE=true` for at least one week before risking real money.**
 
@@ -190,30 +190,42 @@ See [`openclaw/OPENCLAW_SKILL.md`](openclaw/OPENCLAW_SKILL.md) for all supported
 | `POLYGON_RPC_URL` | `https://polygon-rpc.com` | Polygon JSON-RPC endpoint |
 | `TELEGRAM_BOT_TOKEN` | required | Token from @BotFather |
 | `TELEGRAM_CHAT_ID` | required | Your Telegram user/chat ID |
-| `EDGE_THRESHOLD` | `0.07` | Minimum edge (7%) to place a trade |
+| `EDGE_THRESHOLD` | `0.06` | Minimum edge (6%) to place a trade |
 | `ENTRY_WINDOW_SECONDS` | `30` | Only trade in last N seconds of window |
 | `MIN_SECONDS_REMAINING` | `3` | Never trade with fewer than N seconds left |
-| `MAX_BET_FRACTION` | `0.10` | Hard cap: max 10% of bankroll per trade |
-| `KELLY_FRACTION` | `0.25` | Use 25% of full Kelly sizing |
-| `DAILY_LOSS_CAP` | `0.15` | Halt if daily drawdown exceeds 15% |
-| `MIN_MARKET_LIQUIDITY` | `500` | Skip markets with < $500 total depth |
+| `MAX_BET_FRACTION` | `0.06` | Hard cap: max 6% of bankroll per trade |
+| `KELLY_FRACTION` | `0.20` | Use 20% of full Kelly sizing |
+| `TARGET_EDGE_FOR_MAX_SIZE` | `0.12` | Edge level where dynamic sizing reaches max multiplier |
+| `MIN_BET_USD` | `1.0` | Minimum stake for a qualifying signal |
+| `DAILY_LOSS_CAP` | `0.10` | Halt if daily drawdown exceeds 10% |
+| `MIN_MARKET_LIQUIDITY` | `750` | Skip markets with < $750 total depth |
 | `MAX_CONCURRENT_POSITIONS` | `3` | Max open positions at once |
 | `INITIAL_BANKROLL` | `300.0` | Starting bankroll in USD |
 | `CONTROL_API_PORT` | `8765` | Port for local REST API |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG/INFO/WARNING/ERROR) |
-| `PAPER_TRADE` | `true` | Simulate trades without placing real orders |
+| `PAPER_TRADE` | `true` | Shadow live maker behavior without sending live orders |
+| `MAX_REPOSTS_PER_WINDOW` | `4` | Maximum cancel/repost attempts before the window expires |
+| `REPOST_STALE_TICKS` | `2` | Requote only when the ideal maker price moves by at least 2 ticks |
+| `CANCEL_AT_SECONDS_REMAINING` | `6` | Cancel any resting maker order with 6 seconds left |
+| `MAX_MAKER_AGGRESSION_TICKS` | `3` | Maximum number of ticks inside the spread for dynamic maker pricing |
 
 ---
 
 ## 10. Adjusting Strategy Parameters
 
-**`EDGE_THRESHOLD`** — The most important parameter. Higher = fewer but higher-conviction trades. Start at `0.07` (7%). If you're seeing too few trades, lower to `0.05`. If you're over-trading, raise to `0.10`.
+**`EDGE_THRESHOLD`** — The minimum model edge before an entry is allowed. Start at `0.06` (6%). If you're seeing too few trades, lower to `0.05`. If you're over-trading, raise to `0.08` or higher.
 
-**`KELLY_FRACTION`** — Controls aggression. `0.25` (quarter Kelly) is conservative and recommended. Never go above `0.5` (half Kelly).
+**`KELLY_FRACTION`** — Controls aggression. `0.20` is the new default because the sizing engine now uses the correct binary-contract Kelly formula instead of the older simplified version.
 
-**`DAILY_LOSS_CAP`** — Safety net. At `0.15` the bot halts after losing 15% of starting bankroll for the day. You'll get a Telegram alert and can `/resume` via Telegram or OpenClaw.
+**`TARGET_EDGE_FOR_MAX_SIZE`** — Edge level where the dynamic sizer is allowed to reach its full multiplier. `0.12` is a reasonable default for short-dated 5-minute windows.
+
+**`MAX_BET_FRACTION`** — Hard cap on any single stake. `0.06` keeps sizing bounded even when Kelly and liquidity both favor a larger order.
+
+**`DAILY_LOSS_CAP`** — Safety net. At `0.10` the bot halts after losing 10% of starting bankroll for the day. You'll get a Telegram alert and can `/resume` via Telegram or OpenClaw.
 
 **`ENTRY_WINDOW_SECONDS`** — Only enter in the last N seconds. `20`–`30` is optimal for 5-minute windows. Earlier entries give more time but worse signal quality.
+
+**Paper trading parity** — In `PAPER_TRADE=true`, the bot now shadows the public Polymarket order book with the same cancel/repost cadence, maker-price logic, and stake-to-share conversion used in live trading. Logged paper fills therefore reflect whether the quoted maker order would actually have been touched, instead of treating the stake itself as the contract quantity.
 
 ---
 

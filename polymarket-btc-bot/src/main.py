@@ -124,6 +124,10 @@ async def main() -> None:
                             current_price,
                             yes_price=live_market.current_yes_price if live_market else None,
                             no_price=live_market.current_no_price if live_market else None,
+                            liquidity=live_market.liquidity if live_market else None,
+                            volume=live_market.volume if live_market else None,
+                            minimum_tick_size=live_market.minimum_tick_size if live_market else None,
+                            fees_enabled=live_market.fees_enabled if live_market else None,
                         )
 
                         if window.status in (
@@ -154,7 +158,15 @@ async def main() -> None:
                             secs=int(window.seconds_remaining),
                         )
 
-                        bet_size = compute_bet_size(signal, risk.current_bankroll, config)
+                        bet_size = compute_bet_size(
+                            signal,
+                            risk.current_bankroll,
+                            config,
+                            window,
+                        )
+                        if bet_size <= 0:
+                            window.status = WindowStatus.SKIPPED
+                            continue
                         result = await trader.execute(window, signal, bet_size)
 
                         if result is None:

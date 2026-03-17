@@ -66,6 +66,10 @@ class ActiveMarket:
     end_time: datetime
     current_yes_price: Decimal
     current_no_price: Decimal
+    liquidity: float
+    volume: float
+    minimum_tick_size: Decimal
+    fees_enabled: bool
     asset: str  # "BTC", "ETH", "SOL", or "XRP"
 
 
@@ -183,6 +187,19 @@ class MarketScanner:
                     end_time=end_time,
                     current_yes_price=yes_price,
                     current_no_price=no_price,
+                    liquidity=_parse_float(
+                        m.get("liquidityClob", m.get("liquidity", event.get("liquidityClob", event.get("liquidity", 0.0))))
+                    ),
+                    volume=_parse_float(
+                        m.get("volumeClob", m.get("volume", event.get("volumeClob", event.get("volume", 0.0))))
+                    ),
+                    minimum_tick_size=_parse_decimal(
+                        m.get("minimum_tick_size", m.get("tickSize", event.get("minimum_tick_size", "0.01"))),
+                        default="0.01",
+                    ),
+                    fees_enabled=bool(
+                        m.get("feesEnabled", event.get("feesEnabled", False))
+                    ),
                     asset=asset,
                 )
 
@@ -265,6 +282,17 @@ class MarketScanner:
                     end_time=end_time,
                     current_yes_price=yes_price,
                     current_no_price=no_price,
+                    liquidity=_parse_float(
+                        m.get("liquidityClob", m.get("liquidity", 0.0))
+                    ),
+                    volume=_parse_float(
+                        m.get("volumeClob", m.get("volume", 0.0))
+                    ),
+                    minimum_tick_size=_parse_decimal(
+                        m.get("minimum_tick_size", m.get("tickSize", "0.01")),
+                        default="0.01",
+                    ),
+                    fees_enabled=bool(m.get("feesEnabled", False)),
                     asset=asset,
                 )
             except Exception as exc:
@@ -293,3 +321,17 @@ def _parse_dt(s: str) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=tz.utc)
     return dt
+
+
+def _parse_decimal(value, default: str = "0") -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal(default)
+
+
+def _parse_float(value) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return 0.0

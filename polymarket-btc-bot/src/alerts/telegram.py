@@ -57,7 +57,7 @@ class TelegramAlerter:
             f"🎯 <b>Order posted (maker){paper_tag}</b>\n"
             f"Asset: {asset} | Market: {result.question}\n"
             f"Side: <b>{result.side}</b> @ ${float(result.limit_price):.3f}\n"
-            f"Size: ${float(result.bet_size):.2f} | Edge: {result.edge:.1%}\n"
+            f"Size: ${float(result.bet_size):.2f} ({float(getattr(result, 'share_quantity', 0)):.2f} shares) | Edge: {result.edge:.1%}\n"
             f"⏱ {result.seconds_at_entry}s remaining{repost_tag}"
         )
         await self.send(msg)

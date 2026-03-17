@@ -1,0 +1,1 @@
+cd c:\Users\james\Porfolio-Watcher\polymarket-btc-bot; if (!(Test-Path .venv)) { python -m venv .venv }; Set-ExecutionPolicy -Scope Process Bypass; .\.venv\Scripts\Activate.ps1; pip install -r requirements.txt; if (!(Test-Path .env)) { Copy-Item .env.example .env }; Start-Process .\frontend\index.html; python -m src.main

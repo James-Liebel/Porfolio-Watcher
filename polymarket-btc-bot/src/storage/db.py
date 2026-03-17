@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS trades (
     question              TEXT,
     side                  TEXT NOT NULL,
     bet_size              REAL NOT NULL,
+    share_quantity        REAL DEFAULT 0.0,
     limit_price           REAL NOT NULL,
     filled                INTEGER NOT NULL,
     fill_price            REAL,
@@ -62,6 +63,7 @@ CREATE TABLE IF NOT EXISTS deposits (
 
 # Migration: safely add new columns to existing databases
 _MIGRATIONS = [
+    "ALTER TABLE trades ADD COLUMN share_quantity REAL DEFAULT 0.0",
     "ALTER TABLE trades ADD COLUMN asset TEXT DEFAULT 'BTC'",
     "ALTER TABLE trades ADD COLUMN maker_rebate_earned REAL DEFAULT 0.0",
     "ALTER TABLE trades ADD COLUMN order_type TEXT DEFAULT 'maker_gtc'",
@@ -93,11 +95,11 @@ class Database:
         """Insert a TradeResult and return the new row id."""
         sql = """
             INSERT INTO trades
-              (timestamp, market_id, question, side, bet_size, limit_price,
+              (timestamp, market_id, question, side, bet_size, share_quantity, limit_price,
                filled, fill_price, outcome, pnl, delta, edge, true_prob,
                market_prob, seconds_at_entry, paper_trade,
                asset, maker_rebate_earned, order_type, repost_count)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """
         params = (
             trade.timestamp.isoformat(),
@@ -105,6 +107,7 @@ class Database:
             trade.question,
             trade.side,
             float(trade.bet_size),
+            float(getattr(trade, "share_quantity", 0)),
             float(trade.limit_price),
             1 if trade.filled else 0,
             float(trade.fill_price) if trade.fill_price else None,

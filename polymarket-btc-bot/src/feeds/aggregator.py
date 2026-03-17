@@ -5,6 +5,7 @@ Emits a PriceUpdate every 500 ms with per-asset prices.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -19,6 +20,7 @@ logger = structlog.get_logger(__name__)
 
 _DIVERGENCE_THRESHOLD = Decimal("0.003")  # 0.3%
 _POLL_INTERVAL = 0.5  # seconds
+_STALE_LOG_INTERVAL = 30.0  # seconds between stale-feed log lines
 
 
 @dataclass
@@ -47,6 +49,7 @@ class PriceAggregator:
         self._multi = multi_asset
         self._coinbase = coinbase
         self.latest: Optional[PriceUpdate] = None
+        self._last_stale_log: float = 0.0
 
     def get_price(self, asset: str) -> Optional[Decimal]:
         """Convenience accessor for the trading loop."""
@@ -92,7 +95,10 @@ class PriceAggregator:
         feed_count = len(primary_prices)
 
         if not self._multi.all_connected:
-            logger.error("aggregator.multi_asset_feed_stale")
+            now = time.monotonic()
+            if now - self._last_stale_log >= _STALE_LOG_INTERVAL:
+                logger.warning("aggregator.multi_asset_feed_stale")
+                self._last_stale_log = now
 
         self.latest = PriceUpdate(
             timestamp=datetime.now(timezone.utc),

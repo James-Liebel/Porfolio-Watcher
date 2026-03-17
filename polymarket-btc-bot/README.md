@@ -137,6 +137,8 @@ Monitor via the control API:
 curl http://localhost:8765/stats
 ```
 
+**Scanner shows `found: 0`?** The bot only trades markets whose **end time** is between 10 seconds and 15 minutes from now. Polymarket’s Gamma API may not always list the 5-minute crypto windows in the `crypto` / `5M` feeds. If you see `raw_markets: 50` but `found: 0`, the API is working but no market is in that time window—often normal. If `raw_markets: 0`, the API or tags may have changed.
+
 ---
 
 ## 7. Running 24/7

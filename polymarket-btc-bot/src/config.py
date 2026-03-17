@@ -13,13 +13,15 @@ class Settings(BaseSettings):
     )
 
     # ── Polymarket credentials ──────────────────────────────────────────
-    polymarket_api_key: str = Field(..., alias="POLYMARKET_API_KEY")
-    polymarket_secret: str = Field(..., alias="POLYMARKET_SECRET")
-    polymarket_passphrase: str = Field(..., alias="POLYMARKET_PASSPHRASE")
-    polymarket_wallet_address: str = Field(..., alias="POLYMARKET_WALLET_ADDRESS")
+    # Required for live trading only; leave empty for paper trade mode.
+    polymarket_api_key: str = Field(default="", alias="POLYMARKET_API_KEY")
+    polymarket_secret: str = Field(default="", alias="POLYMARKET_SECRET")
+    polymarket_passphrase: str = Field(default="", alias="POLYMARKET_PASSPHRASE")
+    polymarket_wallet_address: str = Field(default="", alias="POLYMARKET_WALLET_ADDRESS")
 
     # ── Polygon wallet ──────────────────────────────────────────────────
-    wallet_private_key: str = Field(..., alias="WALLET_PRIVATE_KEY")
+    # Required for live trading only; leave empty for paper trade mode.
+    wallet_private_key: str = Field(default="", alias="WALLET_PRIVATE_KEY")
 
     # ── Polygon RPC ─────────────────────────────────────────────────────
     polygon_rpc_url: str = Field(
@@ -27,8 +29,9 @@ class Settings(BaseSettings):
     )
 
     # ── Telegram ────────────────────────────────────────────────────────
-    telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
-    telegram_chat_id: str = Field(..., alias="TELEGRAM_CHAT_ID")
+    # Leave empty to disable Telegram alerts (safe for paper trading).
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
 
     # ── Strategy ────────────────────────────────────────────────────────
     edge_threshold: float = Field(default=0.07, alias="EDGE_THRESHOLD")

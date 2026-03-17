@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS daily_summary (
 );
 """
 
+_CREATE_DEPOSITS = """
+CREATE TABLE IF NOT EXISTS deposits (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    amount    REAL NOT NULL,
+    note      TEXT
+);
+"""
+
 # Migration: safely add new columns to existing databases
 _MIGRATIONS = [
     "ALTER TABLE trades ADD COLUMN asset TEXT DEFAULT 'BTC'",
@@ -69,6 +78,7 @@ class Database:
         async with aiosqlite.connect(self._path) as db:
             await db.execute(_CREATE_TRADES)
             await db.execute(_CREATE_DAILY)
+            await db.execute(_CREATE_DEPOSITS)
             await db.commit()
             # Run migrations for existing databases (ignore errors for columns that already exist)
             for sql in _MIGRATIONS:
@@ -163,6 +173,35 @@ class Database:
                 base["fill_rate"] = (filled / total) if total > 0 else 0.0
 
         return base
+
+    async def insert_deposit(self, amount: float, note: str = "") -> int:
+        """Record a deposit of funds to the bankroll. Returns the new row id."""
+        from datetime import datetime, timezone
+        sql = "INSERT INTO deposits (timestamp, amount, note) VALUES (?,?,?)"
+        params = (datetime.now(timezone.utc).isoformat(), amount, note)
+        async with aiosqlite.connect(self._path) as db:
+            cursor = await db.execute(sql, params)
+            await db.commit()
+            row_id = cursor.lastrowid
+        logger.info("db.deposit_recorded", id=row_id, amount=amount, note=note)
+        return row_id
+
+    async def get_total_deposits(self) -> float:
+        """Sum of all recorded deposits (used to initialise bankroll on restart)."""
+        sql = "SELECT COALESCE(SUM(amount), 0.0) FROM deposits"
+        async with aiosqlite.connect(self._path) as db:
+            async with db.execute(sql) as cursor:
+                row = await cursor.fetchone()
+                return float(row[0]) if row else 0.0
+
+    async def get_deposits(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return recent deposit records, newest first."""
+        sql = "SELECT * FROM deposits ORDER BY id DESC LIMIT ?"
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(sql, (limit,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
 
     async def get_all_trades(self, limit: int = 100) -> List[Dict[str, Any]]:
         sql = "SELECT * FROM trades ORDER BY id DESC LIMIT ?"

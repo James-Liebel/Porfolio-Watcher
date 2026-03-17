@@ -18,7 +18,7 @@ logger = structlog.get_logger(__name__)
 
 _SUPPORTED_ASSETS = ("BTC", "ETH", "SOL", "XRP")
 _STREAMS = "/".join(f"{a.lower()}usdt@trade" for a in _SUPPORTED_ASSETS)
-_WS_URL = f"wss://stream.binance.com:9443/stream?streams={_STREAMS}"
+_WS_URL = f"wss://stream.binance.us:9443/stream?streams={_STREAMS}"
 
 _VWAP_WINDOW_SECONDS = 3
 _STALE_THRESHOLD_SECONDS = 5

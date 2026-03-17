@@ -37,7 +37,7 @@ class TelegramAlerter:
     # ── Outbound alerts ─────────────────────────────────────────────────
 
     async def send(self, text: str) -> None:
-        if self._app is None:
+        if self._app is None or not self._config.telegram_bot_token:
             return
         try:
             await self._app.bot.send_message(
@@ -170,6 +170,10 @@ class TelegramAlerter:
 
     async def run(self) -> None:
         """Build and start the Telegram Application in polling mode."""
+        if not self._config.telegram_bot_token:
+            logger.info("telegram.disabled", reason="no TELEGRAM_BOT_TOKEN set")
+            while True:
+                await asyncio.sleep(3600)
         try:
             app = (
                 Application.builder()

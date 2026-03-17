@@ -72,11 +72,20 @@ class RiskManager:
         self._halt_callbacks.append(cb)
 
     async def load_from_db(self, db) -> None:
-        """Restore bankroll and daily stats from persistent storage."""
+        """Restore bankroll and daily stats from persistent storage.
+
+        Priority order for bankroll:
+        1. If today's daily_summary has an ending_bankroll, use that (mid-session resume).
+        2. Otherwise use total deposits recorded (could be 0 if never added any).
+        3. Fall back to config initial_bankroll.
+        """
         try:
+            # Sum all deposits ever made to get the true funded amount
+            total_deposits = await db.get_total_deposits()
+
             stats = await db.get_today_stats()
-            if stats:
-                async with self._lock:
+            async with self._lock:
+                if stats:
                     self._state.daily_pnl = Decimal(str(stats.get("gross_pnl", 0)))
                     self._state.daily_trade_count = stats.get("trades", 0)
                     self._state.daily_wins = stats.get("wins", 0)
@@ -88,7 +97,18 @@ class RiskManager:
                     eb = stats.get("ending_bankroll")
                     if eb:
                         self._state.current_bankroll = Decimal(str(eb))
-            logger.info("risk.state_loaded", stats=stats)
+                elif total_deposits > 0:
+                    # No session yet today — initialise from total deposits
+                    deposited = Decimal(str(total_deposits))
+                    self._state.session_start_bankroll = deposited
+                    self._state.current_bankroll = deposited
+                # else: keep config.initial_bankroll (default from __init__)
+
+            logger.info(
+                "risk.state_loaded",
+                total_deposits=total_deposits,
+                bankroll=float(self._state.current_bankroll),
+            )
         except Exception as exc:
             logger.error("risk.load_error", error=str(exc))
 
@@ -222,6 +242,22 @@ class RiskManager:
                 pnl=float(pnl),
                 bankroll=float(state.current_bankroll),
             )
+
+    async def add_funds(self, amount: float, note: str, db) -> None:
+        """Deposit funds into the bankroll. Persists the deposit to the DB."""
+        if amount <= 0:
+            raise ValueError(f"Deposit amount must be positive, got {amount}")
+        deposit_amount = Decimal(str(amount))
+        async with self._lock:
+            self._state.current_bankroll += deposit_amount
+            self._state.session_start_bankroll += deposit_amount
+        await db.insert_deposit(amount, note)
+        logger.info(
+            "risk.funds_added",
+            amount=amount,
+            note=note,
+            new_bankroll=float(self._state.current_bankroll),
+        )
 
     async def resume_trading(self) -> None:
         async with self._lock:

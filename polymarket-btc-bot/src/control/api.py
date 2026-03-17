@@ -1,4 +1,4 @@
-"""Tiny aiohttp REST API on localhost for OpenClaw and external control."""
+"""Tiny aiohttp REST API on localhost for the frontend dashboard and external control."""
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +14,36 @@ if TYPE_CHECKING:
     from ..storage.db import Database
 
 logger = structlog.get_logger(__name__)
+
+
+# ── CORS middleware ───────────────────────────────────────────────────────────
+# Allows the standalone frontend/index.html (opened via file://) to call the API.
+
+@web.middleware
+async def cors_middleware(request: web.Request, handler):
+    if request.method == "OPTIONS":
+        # Respond to CORS preflight
+        return web.Response(
+            status=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            },
+        )
+    response = await handler(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
+
+def _json(body: object, status: int = 200) -> web.Response:
+    return web.Response(
+        text=json.dumps(body),
+        content_type="application/json",
+        status=status,
+    )
 
 
 class ControlAPI:
@@ -38,15 +68,10 @@ class ControlAPI:
             "daily_pnl": stats["daily_pnl"],
             "paper_trade": self._config.paper_trade,
         }
-        return web.Response(
-            text=json.dumps(body), content_type="application/json"
-        )
+        return _json(body)
 
     async def _stats(self, request: web.Request) -> web.Response:
-        body = self._risk.get_stats()
-        return web.Response(
-            text=json.dumps(body), content_type="application/json"
-        )
+        return _json(self._risk.get_stats())
 
     async def _stats_assets(self, request: web.Request) -> web.Response:
         """Per-asset breakdown: trades, wins, PnL today + open positions."""
@@ -64,9 +89,7 @@ class ControlAPI:
                 "open": risk_row.get("open", 0),
                 "halted": risk_row.get("halted", False),
             }
-        return web.Response(
-            text=json.dumps(body), content_type="application/json"
-        )
+        return _json(body)
 
     async def _halt(self, request: web.Request) -> web.Response:
         try:
@@ -75,16 +98,11 @@ class ControlAPI:
         except Exception:
             reason = "API halt"
         await self._risk.halt_trading(reason)
-        return web.Response(
-            text=json.dumps({"ok": True, "reason": reason}),
-            content_type="application/json",
-        )
+        return _json({"ok": True, "reason": reason})
 
     async def _resume(self, request: web.Request) -> web.Response:
         await self._risk.resume_trading()
-        return web.Response(
-            text=json.dumps({"ok": True}), content_type="application/json"
-        )
+        return _json({"ok": True})
 
     async def _halt_asset(self, request: web.Request) -> web.Response:
         try:
@@ -93,16 +111,9 @@ class ControlAPI:
         except Exception:
             asset = ""
         if asset not in ("BTC", "ETH", "SOL", "XRP"):
-            return web.Response(
-                text=json.dumps({"ok": False, "error": "invalid asset"}),
-                content_type="application/json",
-                status=400,
-            )
+            return _json({"ok": False, "error": "invalid asset"}, status=400)
         await self._risk.halt_asset(asset)
-        return web.Response(
-            text=json.dumps({"ok": True, "asset": asset, "halted": True}),
-            content_type="application/json",
-        )
+        return _json({"ok": True, "asset": asset, "halted": True})
 
     async def _resume_asset(self, request: web.Request) -> web.Response:
         try:
@@ -111,28 +122,55 @@ class ControlAPI:
         except Exception:
             asset = ""
         if asset not in ("BTC", "ETH", "SOL", "XRP"):
-            return web.Response(
-                text=json.dumps({"ok": False, "error": "invalid asset"}),
-                content_type="application/json",
-                status=400,
-            )
+            return _json({"ok": False, "error": "invalid asset"}, status=400)
         await self._risk.resume_asset(asset)
-        return web.Response(
-            text=json.dumps({"ok": True, "asset": asset, "halted": False}),
-            content_type="application/json",
-        )
+        return _json({"ok": True, "asset": asset, "halted": False})
 
     async def _trades(self, request: web.Request) -> web.Response:
         limit = int(request.rel_url.query.get("limit", 20))
         trades = await self._db.get_all_trades(limit=limit)
-        return web.Response(
-            text=json.dumps(trades), content_type="application/json"
-        )
+        return _json(trades)
+
+    # ── Funds endpoints ───────────────────────────────────────────────────
+
+    async def _add_funds(self, request: web.Request) -> web.Response:
+        """POST /funds/add — Add money to the bankroll.
+
+        Body: {"amount": 100.0, "note": "initial deposit"}
+        """
+        try:
+            payload = await request.json()
+            amount = float(payload.get("amount", 0))
+            note = str(payload.get("note", ""))
+        except Exception:
+            return _json({"ok": False, "error": "invalid request body"}, status=400)
+
+        if amount <= 0:
+            return _json({"ok": False, "error": "amount must be positive"}, status=400)
+
+        try:
+            await self._risk.add_funds(amount, note, self._db)
+        except ValueError as exc:
+            return _json({"ok": False, "error": str(exc)}, status=400)
+
+        stats = self._risk.get_stats()
+        return _json({
+            "ok": True,
+            "amount": amount,
+            "note": note,
+            "new_bankroll": stats["bankroll"],
+        })
+
+    async def _funds_history(self, request: web.Request) -> web.Response:
+        """GET /funds/history — List all deposit records."""
+        limit = int(request.rel_url.query.get("limit", 50))
+        deposits = await self._db.get_deposits(limit=limit)
+        return _json(deposits)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        app = web.Application()
+        app = web.Application(middlewares=[cors_middleware])
         app.router.add_get("/health", self._health)
         app.router.add_get("/stats", self._stats)
         app.router.add_get("/stats/assets", self._stats_assets)
@@ -141,6 +179,18 @@ class ControlAPI:
         app.router.add_post("/halt/asset", self._halt_asset)
         app.router.add_post("/resume/asset", self._resume_asset)
         app.router.add_get("/trades", self._trades)
+        app.router.add_post("/funds/add", self._add_funds)
+        app.router.add_get("/funds/history", self._funds_history)
+
+        # Handle OPTIONS preflight for all routes
+        for route in list(app.router.routes()):
+            if hasattr(route, "resource"):
+                try:
+                    app.router.add_options(
+                        route.resource.canonical, lambda r: web.Response(status=204)
+                    )
+                except Exception:
+                    pass
 
         runner = web.AppRunner(app)
         await runner.setup()

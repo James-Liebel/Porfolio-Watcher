@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import sys
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict
@@ -240,29 +241,92 @@ async def main() -> None:
             except Exception as exc:
                 log.error("daily_scheduler.error", error=str(exc))
 
+    # ── Graceful shutdown wiring ──────────────────────────────────────────
+
+    shutting_down = {"value": False}
+
+    async def shutdown(signal_name: str) -> None:
+        if shutting_down["value"]:
+            return
+        shutting_down["value"] = True
+        log.info("shutdown.received", signal=signal_name)
+
+        # Step 1: Stop accepting new signals
+        await risk.halt_trading(f"Shutdown requested: {signal_name}")
+
+        # Step 2: Cancel open orders when order IDs are available
+        for position in list(risk._state.open_positions):  # controlled access during shutdown
+            order_id = getattr(position, "order_id", None)
+            if not order_id:
+                continue
+            try:
+                await trader.cancel_order(order_id)
+                log.info("shutdown.order_cancelled", order_id=order_id)
+            except Exception as exc:
+                log.error("shutdown.cancel_failed", order_id=order_id, error=str(exc))
+
+        # Step 3: Write final state to database
+        stats = risk.get_stats()
+        await db.upsert_daily_summary(
+            date_str=datetime.utcnow().strftime("%Y-%m-%d"),
+            stats={
+                "trades": stats["daily_trade_count"],
+                "wins": stats["daily_wins"],
+                "losses": stats["daily_losses"],
+                "not_filled": stats["daily_not_filled"],
+                "gross_pnl": stats["daily_pnl"],
+                "starting_bankroll": stats["session_start_bankroll"],
+                "ending_bankroll": stats["bankroll"],
+            },
+        )
+
+        # Step 4: Send Telegram notification
+        await telegram.send("🔴 Bot shut down cleanly. All orders cancelled.")
+
+        # Step 5: Cancel all asyncio tasks except current
+        current = asyncio.current_task()
+        tasks = [t for t in asyncio.all_tasks() if t is not current]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(
+                sig,
+                lambda s=sig: asyncio.create_task(shutdown(s.name)),
+            )
+        except NotImplementedError:
+            # Windows event loop fallback
+            pass
+
     # ── Gather all concurrent tasks ───────────────────────────────────────
 
     log.info(
         "bot.started",
         paper_trade=config.paper_trade,
-        assets={
-            "BTC": config.trade_btc,
-            "ETH": config.trade_eth,
-            "SOL": config.trade_sol,
-            "XRP": config.trade_xrp,
-        },
+        strategy_profile=config.strategy_profile,
+        auto_asset_selection=config.auto_asset_selection,
+        enabled_assets=list(config.enabled_assets()),
+        asset_flags=config.manual_asset_flags(),
     )
 
-    await asyncio.gather(
-        _safe_run(multi_asset_feed.run(), "multi_asset_feed"),
-        _safe_run(coinbase.run(), "coinbase_feed"),
-        _safe_run(aggregator.run(), "aggregator"),
-        _safe_run(scanner.run(), "scanner"),
-        _safe_run(trading_loop(), "trading_loop"),
-        _safe_run(control_api.run(), "control_api"),
-        _safe_run(telegram.run(), "telegram"),
-        _safe_run(daily_scheduler(), "daily_scheduler"),
-    )
+    running_tasks = [
+        asyncio.create_task(_safe_run(multi_asset_feed.run(), "multi_asset_feed")),
+        asyncio.create_task(_safe_run(coinbase.run(), "coinbase_feed")),
+        asyncio.create_task(_safe_run(aggregator.run(), "aggregator")),
+        asyncio.create_task(_safe_run(scanner.run(), "scanner")),
+        asyncio.create_task(_safe_run(trading_loop(), "trading_loop")),
+        asyncio.create_task(_safe_run(control_api.run(), "control_api")),
+        asyncio.create_task(_safe_run(telegram.run(), "telegram")),
+        asyncio.create_task(_safe_run(daily_scheduler(), "daily_scheduler")),
+    ]
+
+    try:
+        await asyncio.gather(*running_tasks)
+    except asyncio.CancelledError:
+        await shutdown("CANCELLED")
 
 
 async def _safe_run(coro, name: str) -> None:

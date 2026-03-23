@@ -15,7 +15,7 @@ from ..markets.window import WindowState, WindowStatus
 
 logger = structlog.get_logger(__name__)
 
-_SUPPORTED_ASSETS = ("BTC", "ETH", "SOL", "XRP")
+_SUPPORTED_ASSETS = ("BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK")
 
 
 @dataclass
@@ -32,6 +32,7 @@ class RiskState:
     session_date: str
     session_start_bankroll: Decimal
     current_bankroll: Decimal
+    paper_bankroll: Decimal = field(default=Decimal("0"))
     daily_pnl: Decimal = field(default=Decimal("0"))
     daily_trade_count: int = field(default=0)
     daily_wins: int = field(default=0)
@@ -65,6 +66,7 @@ class RiskManager:
             session_date=today,
             session_start_bankroll=initial,
             current_bankroll=initial,
+            paper_bankroll=initial,
         )
         self._halt_callbacks: List[Callable] = []
 
@@ -102,6 +104,7 @@ class RiskManager:
                     deposited = Decimal(str(total_deposits))
                     self._state.session_start_bankroll = deposited
                     self._state.current_bankroll = deposited
+                    self._state.paper_bankroll = deposited
                 # else: keep config.initial_bankroll (default from __init__)
 
             logger.info(
@@ -167,6 +170,10 @@ class RiskManager:
             # Rule 7: total exposure cap
             total_exposure = sum(p.bet_size for p in state.open_positions)
             max_exposure = state.current_bankroll * Decimal(str(config.max_total_exposure_pct))
+            if config.paper_trade:
+                max_exposure = state.paper_bankroll * Decimal(
+                    str(config.max_total_exposure_pct)
+                )
             if total_exposure >= max_exposure:
                 logger.debug(
                     "risk.exposure_cap",
@@ -234,6 +241,8 @@ class RiskManager:
 
             state.daily_pnl += pnl
             state.current_bankroll += pnl
+            if self._config.paper_trade:
+                state.paper_bankroll += pnl
             logger.info(
                 "risk.outcome_recorded",
                 market_id=result.market_id,
@@ -294,6 +303,7 @@ class RiskManager:
             "trading_halted": state.trading_halted,
             "halt_reason": state.halt_reason,
             "bankroll": float(state.current_bankroll),
+            "paper_bankroll": float(state.paper_bankroll),
             "session_start_bankroll": float(state.session_start_bankroll),
             "daily_pnl": float(state.daily_pnl),
             "daily_trade_count": state.daily_trade_count,
@@ -323,6 +333,8 @@ class RiskManager:
 
     @property
     def current_bankroll(self) -> Decimal:
+        if self._config.paper_trade:
+            return self._state.paper_bankroll
         return self._state.current_bankroll
 
     @property

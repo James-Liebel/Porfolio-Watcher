@@ -31,6 +31,10 @@ class PriceUpdate:
     eth_price: Optional[Decimal]
     sol_price: Optional[Decimal]
     xrp_price: Optional[Decimal]
+    ada_price: Optional[Decimal]
+    doge_price: Optional[Decimal]
+    avax_price: Optional[Decimal]
+    link_price: Optional[Decimal]
     # Coinbase BTC price (used only for cross-check / divergence warning)
     coinbase_btc_price: Optional[Decimal]
     # Legacy field kept so existing code using .median_price still works
@@ -60,6 +64,10 @@ class PriceAggregator:
             "ETH": self.latest.eth_price,
             "SOL": self.latest.sol_price,
             "XRP": self.latest.xrp_price,
+            "ADA": self.latest.ada_price,
+            "DOGE": self.latest.doge_price,
+            "AVAX": self.latest.avax_price,
+            "LINK": self.latest.link_price,
         }.get(asset.upper())
 
     async def run(self) -> None:
@@ -71,11 +79,15 @@ class PriceAggregator:
             await asyncio.sleep(_POLL_INTERVAL)
 
     async def _tick(self) -> None:
-        btc_p, eth_p, sol_p, xrp_p, cb_p = await asyncio.gather(
+        btc_p, eth_p, sol_p, xrp_p, ada_p, doge_p, avax_p, link_p, cb_p = await asyncio.gather(
             self._multi.get_price("BTC"),
             self._multi.get_price("ETH"),
             self._multi.get_price("SOL"),
             self._multi.get_price("XRP"),
+            self._multi.get_price("ADA"),
+            self._multi.get_price("DOGE"),
+            self._multi.get_price("AVAX"),
+            self._multi.get_price("LINK"),
             self._coinbase.get_price(),
         )
 
@@ -91,7 +103,10 @@ class PriceAggregator:
                 )
 
         # Primary feed availability
-        primary_prices = [p for p in (btc_p, eth_p, sol_p, xrp_p) if p is not None]
+        primary_prices = [
+            p for p in (btc_p, eth_p, sol_p, xrp_p, ada_p, doge_p, avax_p, link_p)
+            if p is not None
+        ]
         feed_count = len(primary_prices)
 
         if not self._multi.all_connected:
@@ -106,6 +121,10 @@ class PriceAggregator:
             eth_price=eth_p,
             sol_price=sol_p,
             xrp_price=xrp_p,
+            ada_price=ada_p,
+            doge_price=doge_p,
+            avax_price=avax_p,
+            link_price=link_p,
             coinbase_btc_price=cb_p,
             # median_price kept for backward compatibility — uses BTC
             median_price=btc_p,

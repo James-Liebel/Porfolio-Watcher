@@ -56,6 +56,7 @@ class ControlAPI:
         self._config = config
         self._risk = risk
         self._db = db
+        self._supported_assets = ("BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK")
 
     # ── Handlers ─────────────────────────────────────────────────────────
 
@@ -79,7 +80,7 @@ class ControlAPI:
         db_asset_stats = await self._db.get_asset_trade_stats()
 
         body: dict = {}
-        for asset in ("BTC", "ETH", "SOL", "XRP"):
+        for asset in self._supported_assets:
             db_row = db_asset_stats.get(asset, {})
             risk_row = risk_asset_stats.get(asset, {})
             body[asset] = {
@@ -110,7 +111,7 @@ class ControlAPI:
             asset = payload.get("asset", "").upper()
         except Exception:
             asset = ""
-        if asset not in ("BTC", "ETH", "SOL", "XRP"):
+        if asset not in self._supported_assets:
             return _json({"ok": False, "error": "invalid asset"}, status=400)
         await self._risk.halt_asset(asset)
         return _json({"ok": True, "asset": asset, "halted": True})
@@ -121,7 +122,7 @@ class ControlAPI:
             asset = payload.get("asset", "").upper()
         except Exception:
             asset = ""
-        if asset not in ("BTC", "ETH", "SOL", "XRP"):
+        if asset not in self._supported_assets:
             return _json({"ok": False, "error": "invalid asset"}, status=400)
         await self._risk.resume_asset(asset)
         return _json({"ok": True, "asset": asset, "halted": False})

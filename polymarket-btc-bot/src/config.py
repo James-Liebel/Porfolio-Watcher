@@ -3,6 +3,17 @@ from __future__ import annotations
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_ASSET_FLAG_FIELDS = (
+    ("BTC", "trade_btc"),
+    ("ETH", "trade_eth"),
+    ("SOL", "trade_sol"),
+    ("XRP", "trade_xrp"),
+    ("ADA", "trade_ada"),
+    ("DOGE", "trade_doge"),
+    ("AVAX", "trade_avax"),
+    ("LINK", "trade_link"),
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -38,15 +49,15 @@ class Settings(BaseSettings):
     edge_threshold: float = Field(default=0.07, alias="EDGE_THRESHOLD")
     entry_window_seconds: int = Field(default=30, alias="ENTRY_WINDOW_SECONDS")
     min_seconds_remaining: int = Field(default=3, alias="MIN_SECONDS_REMAINING")
-    max_bet_fraction: float = Field(default=0.06, alias="MAX_BET_FRACTION")
-    kelly_fraction: float = Field(default=0.20, alias="KELLY_FRACTION")
+    max_bet_fraction: float = Field(default=0.03, alias="MAX_BET_FRACTION")
+    kelly_fraction: float = Field(default=0.10, alias="KELLY_FRACTION")
     target_edge_for_max_size: float = Field(
-        default=0.12, alias="TARGET_EDGE_FOR_MAX_SIZE"
+        default=0.14, alias="TARGET_EDGE_FOR_MAX_SIZE"
     )
     min_bet_usd: float = Field(default=1.0, alias="MIN_BET_USD")
-    daily_loss_cap: float = Field(default=0.10, alias="DAILY_LOSS_CAP")
-    min_market_liquidity: float = Field(default=750.0, alias="MIN_MARKET_LIQUIDITY")
-    max_concurrent_positions: int = Field(default=3, alias="MAX_CONCURRENT_POSITIONS")
+    daily_loss_cap: float = Field(default=0.05, alias="DAILY_LOSS_CAP")
+    min_market_liquidity: float = Field(default=1500.0, alias="MIN_MARKET_LIQUIDITY")
+    max_concurrent_positions: int = Field(default=2, alias="MAX_CONCURRENT_POSITIONS")
     initial_bankroll: float = Field(default=300.0, alias="INITIAL_BANKROLL")
 
     # ── Control API ─────────────────────────────────────────────────────
@@ -58,11 +69,19 @@ class Settings(BaseSettings):
     # ── Paper trade mode ────────────────────────────────────────────────
     paper_trade: bool = Field(default=True, alias="PAPER_TRADE")
 
+    # ── Portfolio profile ───────────────────────────────────────────────
+    strategy_profile: str = Field(default="conservative", alias="STRATEGY_PROFILE")
+    auto_asset_selection: bool = Field(default=True, alias="AUTO_ASSET_SELECTION")
+
     # ── Multi-asset on/off switches ─────────────────────────────────────
     trade_btc: bool = Field(default=True, alias="TRADE_BTC")
     trade_eth: bool = Field(default=True, alias="TRADE_ETH")
     trade_sol: bool = Field(default=True, alias="TRADE_SOL")
     trade_xrp: bool = Field(default=True, alias="TRADE_XRP")
+    trade_ada: bool = Field(default=False, alias="TRADE_ADA")
+    trade_doge: bool = Field(default=False, alias="TRADE_DOGE")
+    trade_avax: bool = Field(default=False, alias="TRADE_AVAX")
+    trade_link: bool = Field(default=False, alias="TRADE_LINK")
 
     # ── Maker order tuning ───────────────────────────────────────────────
     max_reposts_per_window: int = Field(default=4, alias="MAX_REPOSTS_PER_WINDOW")
@@ -78,6 +97,42 @@ class Settings(BaseSettings):
     # ── Multi-asset risk ─────────────────────────────────────────────────
     max_positions_per_asset: int = Field(default=1, alias="MAX_POSITIONS_PER_ASSET")
     max_total_exposure_pct: float = Field(default=0.40, alias="MAX_TOTAL_EXPOSURE_PCT")
+
+    def manual_asset_flags(self) -> dict[str, bool]:
+        return {
+            asset: bool(getattr(self, field_name))
+            for asset, field_name in _ASSET_FLAG_FIELDS
+        }
+
+    def enabled_assets(self) -> tuple[str, ...]:
+        flags = self.manual_asset_flags()
+        if not self.auto_asset_selection:
+            return tuple(asset for asset, enabled in flags.items() if enabled)
+
+        bankroll = max(float(self.initial_bankroll), 0.0)
+        profile = (self.strategy_profile or "conservative").strip().lower()
+
+        if profile == "aggressive":
+            allowed = set(flags)
+        elif profile == "balanced":
+            if bankroll < 500:
+                allowed = {"BTC", "ETH", "SOL"}
+            elif bankroll < 1000:
+                allowed = {"BTC", "ETH", "SOL", "XRP"}
+            else:
+                allowed = set(flags)
+        else:
+            if bankroll < 500:
+                allowed = {"BTC", "ETH"}
+            elif bankroll < 1000:
+                allowed = {"BTC", "ETH", "SOL"}
+            else:
+                allowed = {"BTC", "ETH", "SOL", "XRP"}
+
+        return tuple(asset for asset, enabled in flags.items() if enabled and asset in allowed)
+
+    def is_asset_enabled(self, asset: str) -> bool:
+        return asset.upper() in set(self.enabled_assets())
 
 
 def get_settings() -> Settings:

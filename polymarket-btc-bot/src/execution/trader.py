@@ -110,6 +110,14 @@ class Trader:
     ) -> Optional[TradeResult]:
         """Place a GTC postOnly order and manage it until fill or expiry."""
         try:
+            if self._config.paper_trade:
+                logger.info(
+                    "trader.paper_mode_execution",
+                    market_id=window.market_id,
+                    asset=signal.asset,
+                    side=signal.trade_side,
+                    intended_stake=str(bet_size),
+                )
             return await asyncio.get_event_loop().run_in_executor(
                 None,
                 self._execute_sync,
@@ -729,6 +737,12 @@ class Trader:
         Returns (order_id, rejected_by_postonly).
         """
         try:
+            if self._config.paper_trade:
+                logger.error(
+                    "SAFETY: real order blocked in paper mode",
+                    token_id=token_id,
+                )
+                return None, False
             from py_clob_client.clob_types import OrderArgs, OrderType
             from py_clob_client.constants import BUY
 
@@ -779,6 +793,9 @@ class Trader:
             logger.info("trader.order_cancelled", order_id=order_id)
         except Exception as exc:
             logger.warning("trader.cancel_error", order_id=order_id, error=str(exc))
+
+    async def cancel_order(self, order_id: str) -> None:
+        await asyncio.get_event_loop().run_in_executor(None, self._cancel_order, order_id)
 
     # ── Settlement / resolution ───────────────────────────────────────────
 

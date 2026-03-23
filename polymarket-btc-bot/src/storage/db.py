@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS trades (
     asset                 TEXT DEFAULT 'BTC',
     maker_rebate_earned   REAL DEFAULT 0.0,
     order_type            TEXT DEFAULT 'maker_gtc',
-    repost_count          INTEGER DEFAULT 0
+    repost_count          INTEGER DEFAULT 0,
+    reason                TEXT DEFAULT ''
 );
 """
 
@@ -68,6 +69,7 @@ _MIGRATIONS = [
     "ALTER TABLE trades ADD COLUMN maker_rebate_earned REAL DEFAULT 0.0",
     "ALTER TABLE trades ADD COLUMN order_type TEXT DEFAULT 'maker_gtc'",
     "ALTER TABLE trades ADD COLUMN repost_count INTEGER DEFAULT 0",
+    "ALTER TABLE trades ADD COLUMN reason TEXT DEFAULT ''",
 ]
 
 
@@ -98,8 +100,8 @@ class Database:
               (timestamp, market_id, question, side, bet_size, share_quantity, limit_price,
                filled, fill_price, outcome, pnl, delta, edge, true_prob,
                market_prob, seconds_at_entry, paper_trade,
-               asset, maker_rebate_earned, order_type, repost_count)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               asset, maker_rebate_earned, order_type, repost_count, reason)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """
         params = (
             trade.timestamp.isoformat(),
@@ -123,6 +125,7 @@ class Database:
             float(getattr(trade, "maker_rebate_earned", 0)),
             getattr(trade, "order_type", "maker_gtc"),
             getattr(trade, "repost_count", 0),
+            getattr(trade, "reason", ""),
         )
         async with aiosqlite.connect(self._path) as db:
             cursor = await db.execute(sql, params)
@@ -233,6 +236,71 @@ class Database:
         for row in rows:
             result[row[0]] = {"trades": row[1], "wins": row[2], "pnl": row[3]}
         return result
+
+    async def get_edge_bucket_stats(self) -> List[Dict[str, Any]]:
+        """Return predicted vs actual win rates by edge bucket for diagnostics."""
+        sql = """
+            SELECT
+              CASE
+                WHEN edge < 0.05 THEN '<5%'
+                WHEN edge < 0.10 THEN '5-10%'
+                WHEN edge < 0.15 THEN '10-15%'
+                ELSE '15%+'
+              END AS edge_bucket,
+              COUNT(*) AS trades,
+              AVG(true_prob) AS avg_pred_true_prob,
+              SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) * 1.0 /
+                NULLIF(SUM(CASE WHEN outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END), 0)
+                AS actual_win_rate
+            FROM trades
+            WHERE outcome IN ('WIN','LOSS')
+            GROUP BY edge_bucket
+            ORDER BY
+              CASE edge_bucket
+                WHEN '<5%' THEN 1
+                WHEN '5-10%' THEN 2
+                WHEN '10-15%' THEN 3
+                ELSE 4
+              END
+        """
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(sql) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def get_execution_quality_stats(self) -> Dict[str, Any]:
+        """Return fill-rate and repost quality diagnostics."""
+        sql = """
+            SELECT
+              COUNT(*) AS total_orders,
+              SUM(filled) AS filled_orders,
+              AVG(repost_count) AS avg_reposts,
+              SUM(CASE WHEN reason='expired' THEN 1 ELSE 0 END) AS expired_orders
+            FROM trades
+        """
+        async with aiosqlite.connect(self._path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(sql) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return {
+                        "total_orders": 0,
+                        "filled_orders": 0,
+                        "fill_rate": 0.0,
+                        "avg_reposts": 0.0,
+                        "expired_orders": 0,
+                    }
+                total = row["total_orders"] or 0
+                filled = row["filled_orders"] or 0
+                fill_rate = (filled / total) if total else 0.0
+                return {
+                    "total_orders": total,
+                    "filled_orders": filled,
+                    "fill_rate": fill_rate,
+                    "avg_reposts": float(row["avg_reposts"] or 0.0),
+                    "expired_orders": row["expired_orders"] or 0,
+                }
 
     async def upsert_daily_summary(self, date_str: str, stats: Dict[str, Any]) -> None:
         sql = """

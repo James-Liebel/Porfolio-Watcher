@@ -1,5 +1,5 @@
 """
-Binance combined-stream feed for BTC, ETH, SOL, and XRP simultaneously.
+Binance combined-stream feed for the supported crypto asset set.
 Uses a single WebSocket connection with the multi-stream endpoint.
 """
 from __future__ import annotations
@@ -11,19 +11,21 @@ from collections import deque
 from decimal import Decimal
 from typing import Deque, Dict, NamedTuple, Optional
 
+import aiohttp
 import structlog
 import websockets
 
 logger = structlog.get_logger(__name__)
 
-_SUPPORTED_ASSETS = ("BTC", "ETH", "SOL", "XRP")
+_SUPPORTED_ASSETS = ("BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK")
 _STREAMS = "/".join(f"{a.lower()}usdt@trade" for a in _SUPPORTED_ASSETS)
-_WS_URL = f"wss://stream.binance.us:9443/stream?streams={_STREAMS}"
+_WS_URL = f"wss://stream.binance.com/stream?streams={_STREAMS}"
 
 _VWAP_WINDOW_SECONDS = 3
 _STALE_THRESHOLD_SECONDS = 5
 _BACKOFF_BASE = 1
 _BACKOFF_MAX = 60
+_REST_URL = "https://api.binance.com/api/v3/ticker/price?symbol={symbol}USDT"
 
 
 class _Trade(NamedTuple):
@@ -34,7 +36,7 @@ class _Trade(NamedTuple):
 
 class MultiAssetFeed:
     """
-    Single Binance combined-stream WebSocket for BTC, ETH, SOL, XRP.
+    Single Binance combined-stream WebSocket for the supported asset set.
     Maintains a 3-second rolling VWAP per asset.
     Auto-reconnects with exponential backoff.
     """
@@ -83,6 +85,7 @@ class MultiAssetFeed:
                     error=str(exc),
                     backoff_seconds=backoff,
                 )
+                await self._rest_snapshot()
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _BACKOFF_MAX)
 
@@ -105,3 +108,25 @@ class MultiAssetFeed:
                         self._update_vwap(asset, price, qty)
                 except (KeyError, ValueError) as exc:
                     logger.warning("multi_asset_feed.parse_error", error=str(exc))
+
+    async def _rest_snapshot(self) -> None:
+        """
+        Safety fallback when WebSocket handshake fails in restricted networks.
+        Keeps prices warm so paper-trading can still run.
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                for asset in _SUPPORTED_ASSETS:
+                    async with session.get(
+                        _REST_URL.format(symbol=asset),
+                        timeout=aiohttp.ClientTimeout(total=5),
+                    ) as resp:
+                        if resp.status != 200:
+                            continue
+                        data = await resp.json()
+                        price = Decimal(str(data["price"]))
+                        async with self._lock:
+                            self._update_vwap(asset, price, Decimal("1"))
+            logger.info("multi_asset_feed.rest_snapshot_ok")
+        except Exception as exc:
+            logger.warning("multi_asset_feed.rest_snapshot_error", error=str(exc))

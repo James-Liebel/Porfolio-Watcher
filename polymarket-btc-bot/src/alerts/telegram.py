@@ -40,6 +40,8 @@ class TelegramAlerter:
         if self._app is None or not self._config.telegram_bot_token:
             return
         try:
+            if self._config.paper_trade and not text.startswith("[PAPER]"):
+                text = f"[PAPER] {text}"
             await self._app.bot.send_message(
                 chat_id=self._chat_id,
                 text=text,

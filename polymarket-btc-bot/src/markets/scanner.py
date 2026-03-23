@@ -1,4 +1,4 @@
-"""Polls Gamma API every 60 s for active 5-minute BTC/ETH/SOL/XRP markets.
+"""Polls Gamma API every 60 s for active supported 5-minute crypto markets.
 
 Discovery uses two methods:
 1. Tag-based: /markets?tag=crypto (and 5M, 5m) — often misses short-dated 5m windows.
@@ -32,6 +32,10 @@ _ASSET_SLUG_PREFIX: Dict[str, str] = {
     "ETH": "eth",
     "SOL": "sol",
     "XRP": "xrp",
+    "ADA": "ada",
+    "DOGE": "doge",
+    "AVAX": "avax",
+    "LINK": "link",
 }
 
 # Multiple tags to try for tag-based discovery
@@ -43,6 +47,10 @@ _ASSET_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
     (("ethereum", "eth"), "ETH"),
     (("solana", "sol"), "SOL"),
     (("xrp", "ripple"), "XRP"),
+    (("cardano", "ada"), "ADA"),
+    (("dogecoin", "doge"), "DOGE"),
+    (("avalanche", "avax"), "AVAX"),
+    (("chainlink", "link"), "LINK"),
 ]
 
 
@@ -76,7 +84,7 @@ class ActiveMarket:
 class MarketScanner:
     """
     Continuously polls Gamma API for active short-window prediction markets
-    across BTC, ETH, SOL, and XRP.  Assets disabled in config are skipped.
+    across the supported crypto asset set. Assets disabled in config are skipped.
     Exposes `active_markets` dict keyed by market_id.
     """
 
@@ -88,12 +96,7 @@ class MarketScanner:
     def _asset_enabled(self, asset: str) -> bool:
         if self._config is None:
             return True
-        return {
-            "BTC": self._config.trade_btc,
-            "ETH": self._config.trade_eth,
-            "SOL": self._config.trade_sol,
-            "XRP": self._config.trade_xrp,
-        }.get(asset, False)
+        return self._config.is_asset_enabled(asset)
 
     async def run(self) -> None:
         async with aiohttp.ClientSession() as session:

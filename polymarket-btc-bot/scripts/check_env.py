@@ -78,6 +78,9 @@ def main() -> int:
         ("GAMMA_BASE_URL", settings.gamma_base_url),
         ("CLOB_HOST", settings.clob_host),
         ("ARB_POLL_SECONDS", settings.arb_poll_seconds),
+        ("ARB_CYCLE_ERROR_BACKOFF_SECONDS", settings.arb_cycle_error_backoff_seconds),
+        ("GAMMA_HTTP_TIMEOUT_SECONDS", settings.gamma_http_timeout_seconds),
+        ("CLOB_BOOK_FETCH_CONCURRENCY", settings.clob_book_fetch_concurrency),
         ("INITIAL_BANKROLL", settings.initial_bankroll),
     )
     for label, val in core:

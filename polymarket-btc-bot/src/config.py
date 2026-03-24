@@ -68,7 +68,19 @@ class Settings(BaseSettings):
         default="https://clob.polymarket.com", alias="CLOB_HOST"
     )
     arb_poll_seconds: int = Field(default=20, alias="ARB_POLL_SECONDS")
+    # Extra delay after a failed run_cycle() before the normal poll wait (reduces tight error loops).
+    arb_cycle_error_backoff_seconds: int = Field(
+        default=8, alias="ARB_CYCLE_ERROR_BACKOFF_SECONDS"
+    )
     max_tracked_events: int = Field(default=100, alias="MAX_TRACKED_EVENTS")
+    # aiohttp total timeout for Gamma REST calls (events/markets).
+    gamma_http_timeout_seconds: float = Field(
+        default=30.0, alias="GAMMA_HTTP_TIMEOUT_SECONDS"
+    )
+    # Limit parallel CLOB get_order_book calls per cycle to avoid throttling and thread pile-up.
+    clob_book_fetch_concurrency: int = Field(
+        default=12, alias="CLOB_BOOK_FETCH_CONCURRENCY"
+    )
     min_event_liquidity: float = Field(default=2000.0, alias="MIN_EVENT_LIQUIDITY")
     min_outcomes_per_event: int = Field(default=2, alias="MIN_OUTCOMES_PER_EVENT")
     min_complete_set_edge_bps: float = Field(

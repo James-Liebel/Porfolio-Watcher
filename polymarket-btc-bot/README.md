@@ -177,6 +177,9 @@ Discovery / execution:
 - `GAMMA_BASE_URL`
 - `CLOB_HOST`
 - `ARB_POLL_SECONDS`
+- `ARB_CYCLE_ERROR_BACKOFF_SECONDS` (extra pause after a failed cycle before the next poll)
+- `GAMMA_HTTP_TIMEOUT_SECONDS` (Gamma REST total timeout)
+- `CLOB_BOOK_FETCH_CONCURRENCY` (parallel CLOB book fetches per cycle; lower if rate-limited)
 - `MAX_TRACKED_EVENTS`
 - `MIN_EVENT_LIQUIDITY`
 - `MIN_OUTCOMES_PER_EVENT`

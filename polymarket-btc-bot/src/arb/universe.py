@@ -99,7 +99,7 @@ class GammaUniverseService:
             return payload.get("events", []), payload.get("markets", [])
 
         if self._session is None:
-            timeout = aiohttp.ClientTimeout(total=20)
+            timeout = aiohttp.ClientTimeout(total=float(self._config.gamma_http_timeout_seconds))
             self._session = aiohttp.ClientSession(timeout=timeout)
 
         event_params = {
@@ -122,7 +122,7 @@ class GammaUniverseService:
 
     async def _load_event_payload(self, event_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         if self._session is None:
-            timeout = aiohttp.ClientTimeout(total=20)
+            timeout = aiohttp.ClientTimeout(total=float(self._config.gamma_http_timeout_seconds))
             self._session = aiohttp.ClientSession(timeout=timeout)
 
         meta: dict[str, Any] = {}

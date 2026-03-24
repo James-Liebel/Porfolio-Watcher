@@ -30,6 +30,7 @@ class ClobMarketDataService:
     def __init__(self, config: Settings, client: Any | None = None) -> None:
         self._config = config
         self._client = client
+        self._fetch_sem = asyncio.Semaphore(max(1, int(config.clob_book_fetch_concurrency)))
         if self._client is None and ClobClient is not None:
             try:
                 self._client = ClobClient(
@@ -54,8 +55,20 @@ class ClobMarketDataService:
                 books[token_id] = self._synthetic_book(market, token_id, contract_side)
             return books
 
-        tasks = [self._fetch_book(market, token_id, contract_side) for market, token_id, contract_side in markets]
-        for book in await asyncio.gather(*tasks, return_exceptions=True):
+        async def _gated_fetch(
+            market: OutcomeMarket, token_id: str, contract_side: str
+        ) -> TokenBook | Exception:
+            async with self._fetch_sem:
+                try:
+                    return await self._fetch_book(market, token_id, contract_side)
+                except Exception as exc:
+                    return exc
+
+        tasks = [
+            _gated_fetch(market, token_id, contract_side)
+            for market, token_id, contract_side in markets
+        ]
+        for book in await asyncio.gather(*tasks):
             if isinstance(book, Exception):
                 logger.warning("market_data.book_error", error=str(book))
                 continue

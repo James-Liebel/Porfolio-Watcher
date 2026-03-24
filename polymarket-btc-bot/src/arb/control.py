@@ -285,5 +285,5 @@ class ArbControlAPI:
         try:
             while True:
                 await asyncio.sleep(3600)
-        except asyncio.CancelledError:
+        finally:
             await runner.cleanup()

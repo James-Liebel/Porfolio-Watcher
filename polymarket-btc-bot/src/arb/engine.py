@@ -102,12 +102,20 @@ class ArbEngine:
     async def run(self) -> None:
         await self.initialize()
         while not self._stop.is_set():
+            cycle_failed = False
             try:
                 await self.run_cycle()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                cycle_failed = True
                 logger.error("arb_engine.cycle_error", error=str(exc), exc_info=True)
+            if cycle_failed:
+                backoff = max(1, min(self._config.arb_cycle_error_backoff_seconds, 300))
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
+                except asyncio.TimeoutError:
+                    pass
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._config.arb_poll_seconds)
             except asyncio.TimeoutError:
@@ -174,6 +182,15 @@ class ArbEngine:
                 "executed": executed,
                 **bsrc,
             }
+            logger.info(
+                "arb_engine.cycle_done",
+                tracked_events=len(events),
+                opportunities=len(opportunities),
+                executed=executed,
+                books_clob=bsrc["books_clob"],
+                books_synthetic=bsrc["books_synthetic"],
+                books_other=bsrc["books_other"],
+            )
             return dict(self._last_cycle_summary)
 
     async def _execute_opportunity(self, opportunity: ArbOpportunity) -> BasketRecord | None:

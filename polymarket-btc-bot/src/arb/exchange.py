@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..config import Settings
+from .book_matching import walk_taker_levels
+from .fees import maker_rebate_on_notional, taker_fee_on_notional
 from .models import ArbEvent, FillRecord, OrderIntent, OrderRecord, PositionRecord, TokenBook, utc_now
 
 
@@ -352,19 +354,8 @@ class PaperExchange:
 
     def _simulate_executions(self, order: OrderRecord, book: TokenBook) -> list[tuple[float, float]]:
         remaining = max(order.size - order.filled_size, 0.0)
-        executions: list[tuple[float, float]] = []
-        levels = book.asks if order.side == "BUY" else book.bids
-        for level in levels:
-            if remaining <= 1e-12:
-                break
-            price_ok = level.price <= order.price + 1e-12 if order.side == "BUY" else level.price >= order.price - 1e-12
-            if not price_ok:
-                break
-            size = min(level.size, remaining)
-            if size > 0:
-                executions.append((level.price, size))
-                remaining -= size
-        return executions
+        side: str = "BUY" if order.side == "BUY" else "SELL"
+        return walk_taker_levels(book, side, float(order.price), remaining)  # type: ignore[arg-type]
 
     def _consume_book(self, token_id: str, side: str, executions: list[tuple[float, float]]) -> None:
         book = self._books[token_id]
@@ -387,10 +378,14 @@ class PaperExchange:
 
     def _apply_fill(self, order: OrderRecord, fill: FillRecord) -> None:
         notional = fill.price * fill.size
-        fee_rate = self._config.paper_taker_fee_bps / 10000.0 if order.fees_enabled and order.maker_or_taker == "taker" else 0.0
-        rebate_rate = self._config.paper_maker_rebate_bps / 10000.0 if order.fees_enabled and order.maker_or_taker == "maker" else 0.0
-        fee_paid = notional * fee_rate
-        rebate = notional * rebate_rate
+        if order.fees_enabled and order.maker_or_taker == "taker":
+            fee_paid = taker_fee_on_notional(notional, True, self._config.paper_taker_fee_bps)
+        else:
+            fee_paid = 0.0
+        if order.fees_enabled and order.maker_or_taker == "maker":
+            rebate = maker_rebate_on_notional(notional, True, self._config.paper_maker_rebate_bps)
+        else:
+            rebate = 0.0
         fill.fee_paid = fee_paid
         fill.rebate_earned = rebate
         self.fees_paid += fee_paid
@@ -514,7 +509,5 @@ class PaperExchange:
         notional = float(price) * float(size)
         if side != "BUY":
             return 0.0
-        fee_rate = 0.0
-        if fees_enabled and maker_or_taker == "taker":
-            fee_rate = self._config.paper_taker_fee_bps / 10000.0
-        return notional * (1.0 + fee_rate)
+        fee = taker_fee_on_notional(notional, fees_enabled and maker_or_taker == "taker", self._config.paper_taker_fee_bps)
+        return notional + fee

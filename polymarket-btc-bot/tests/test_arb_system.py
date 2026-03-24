@@ -544,3 +544,94 @@ async def test_arb_control_legacy_compat_routes():
             assert bad.status == 400
     finally:
         os.unlink(path)
+
+
+def test_scanner_capital_required_matches_exchange_cash_for_complete_set():
+    """Scanner sizing uses the same book walk + taker fees as PaperExchange."""
+    event = ArbEvent(
+        event_id="e-depth",
+        title="Depth test",
+        markets=[
+            OutcomeMarket(
+                "e-depth", "m1", "?", "A", "y1", "n1", tick_size=0.01, fees_enabled=True
+            ),
+            OutcomeMarket(
+                "e-depth", "m2", "?", "B", "y2", "n2", tick_size=0.01, fees_enabled=True
+            ),
+            OutcomeMarket(
+                "e-depth", "m3", "?", "C", "y3", "n3", tick_size=0.01, fees_enabled=True
+            ),
+        ],
+    )
+    ts = event_time()
+    books = {
+        "y1": TokenBook(
+            "y1",
+            ts,
+            0.28,
+            0.30,
+            bids=[PriceLevel(0.28, 100)],
+            asks=[PriceLevel(0.30, 2), PriceLevel(0.31, 100)],
+            fees_enabled=True,
+        ),
+        "y2": TokenBook(
+            "y2", ts, 0.24, 0.25, bids=[PriceLevel(0.24, 100)], asks=[PriceLevel(0.25, 100)], fees_enabled=True
+        ),
+        "y3": TokenBook(
+            "y3", ts, 0.19, 0.20, bids=[PriceLevel(0.19, 100)], asks=[PriceLevel(0.20, 100)], fees_enabled=True
+        ),
+        "n1": TokenBook("n1", ts, 0.69, 0.70, bids=[PriceLevel(0.69, 100)], asks=[PriceLevel(0.70, 100)]),
+        "n2": TokenBook("n2", ts, 0.74, 0.75, bids=[PriceLevel(0.74, 100)], asks=[PriceLevel(0.75, 100)]),
+        "n3": TokenBook("n3", ts, 0.79, 0.80, bids=[PriceLevel(0.79, 100)], asks=[PriceLevel(0.80, 100)]),
+    }
+    cfg = Settings(
+        _env_file=None,
+        paper_trade=True,
+        initial_bankroll=1_000_000.0,
+        max_basket_notional=10_000.0,
+        min_event_liquidity=0.0,
+        min_outcomes_per_event=2,
+        min_complete_set_edge_bps=1.0,
+        min_neg_risk_edge_bps=10.0,
+        allow_taker_execution=True,
+        paper_taker_fee_bps=100.0,
+        paper_maker_rebate_bps=0.0,
+        opportunity_cooldown_seconds=0,
+        max_total_open_baskets=10,
+        max_opportunities_per_cycle=5,
+        max_event_exposure_pct=1.0,
+        daily_loss_cap=0.99,
+        arb_poll_seconds=1,
+        max_tracked_events=100,
+    )
+    complete = [o for o in OpportunityScanner(cfg).scan([event], books) if o.strategy_type == "complete_set"]
+    assert len(complete) == 1
+    opp = complete[0]
+
+    exchange = PaperExchange(cfg)
+    exchange.set_starting_cash(1_000_000.0)
+    exchange.update_universe([event])
+    exchange.sync_books(books)
+    cash0 = exchange.cash
+
+    for leg in opp.legs:
+        intent = OrderIntent(
+            basket_id="b1",
+            opportunity_id=opp.opportunity_id,
+            token_id=leg.token_id,
+            market_id=leg.market_id,
+            event_id=opp.event_id,
+            contract_side=leg.position_side,
+            side=leg.action,
+            price=leg.price,
+            size=leg.size,
+            order_type="fok",
+            maker_or_taker="taker",
+            fees_enabled=leg.fees_enabled,
+            metadata={},
+        )
+        order, fills = exchange.place_order(intent)
+        assert order.status == "filled", order.reason
+        assert order.filled_size == pytest.approx(leg.size)
+
+    assert opp.capital_required == pytest.approx(cash0 - exchange.cash, rel=0, abs=1e-4)

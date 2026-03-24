@@ -1,25 +1,134 @@
 from __future__ import annotations
 
 from ..config import Settings
+from .book_matching import filled_size, walk_taker_levels
+from .fees import taker_fee_on_notional
 from .models import ArbEvent, ArbOpportunity, OpportunityLeg, TokenBook
-
-
-def _buy_fee(price: float, size: float, fees_enabled: bool, config: Settings) -> float:
-    if not fees_enabled:
-        return 0.0
-    return price * size * (config.paper_taker_fee_bps / 10000.0)
-
-
-def _sell_fee(price: float, size: float, fees_enabled: bool, config: Settings) -> float:
-    if not fees_enabled:
-        return 0.0
-    return price * size * (config.paper_taker_fee_bps / 10000.0)
 
 
 def _edge_bps(profit: float, capital: float) -> float:
     if capital <= 0:
         return 0.0
     return (profit / capital) * 10000.0
+
+
+def _complete_set_buy_cash_out(
+    legs_spec: list[tuple[TokenBook, float, bool]], size: float, config: Settings
+) -> tuple[bool, float]:
+    """All legs BUY `size` at each limit; return (all_filled, total_cash_including_taker_fees)."""
+    if size <= 1e-12:
+        return True, 0.0
+    total = 0.0
+    for book, limit_price, fees_en in legs_spec:
+        ex = walk_taker_levels(book, "BUY", limit_price, size)
+        if filled_size(ex) + 1e-11 < size:
+            return False, 0.0
+        for price, sz in ex:
+            n = price * sz
+            total += n + taker_fee_on_notional(n, fees_en, config.paper_taker_fee_bps)
+    return True, total
+
+
+def _max_size_under_notional_complete_set(
+    legs_spec: list[tuple[TokenBook, float, bool]], max_notional: float, config: Settings
+) -> tuple[float, float]:
+    """Return (size, cash_out) maximizing size in [0, depth_hi] with cash_out <= max_notional."""
+    s_hi = min(book.available_to_buy(lp) for book, lp, _ in legs_spec)
+    if s_hi <= 1e-12:
+        return 0.0, 0.0
+
+    lo, hi = 0.0, s_hi
+    for _ in range(64):
+        mid = (lo + hi) * 0.5
+        ok, cost = _complete_set_buy_cash_out(legs_spec, mid, config)
+        if not ok:
+            hi = mid
+            continue
+        if cost <= max_notional + 1e-9:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < 1e-10:
+            break
+
+    ok, final_cost = _complete_set_buy_cash_out(legs_spec, lo, config)
+    if not ok or lo <= 1e-12:
+        return 0.0, 0.0
+    # Clamp numerical dust so risk.max_basket_notional checks stay stable.
+    if final_cost > max_notional and final_cost <= max_notional + 1e-4:
+        final_cost = float(max_notional)
+    return lo, final_cost
+
+
+def _neg_risk_cashflows(
+    no_book: TokenBook,
+    no_limit: float,
+    buy_fees_en: bool,
+    sell_specs: list[tuple[TokenBook, float, bool]],
+    size: float,
+    config: Settings,
+) -> tuple[bool, float, float]:
+    """Returns (ok, buy_cash_out, sell_cash_in_net_of_fees)."""
+    if size <= 1e-12:
+        return True, 0.0, 0.0
+
+    ex_b = walk_taker_levels(no_book, "BUY", no_limit, size)
+    if filled_size(ex_b) + 1e-11 < size:
+        return False, 0.0, 0.0
+    buy_cost = 0.0
+    for price, sz in ex_b:
+        n = price * sz
+        buy_cost += n + taker_fee_on_notional(n, buy_fees_en, config.paper_taker_fee_bps)
+
+    sell_in = 0.0
+    for book, lim, fe in sell_specs:
+        ex = walk_taker_levels(book, "SELL", lim, size)
+        if filled_size(ex) + 1e-11 < size:
+            return False, 0.0, 0.0
+        for price, sz in ex:
+            n = price * sz
+            sell_in += n - taker_fee_on_notional(n, fe, config.paper_taker_fee_bps)
+
+    return True, buy_cost, sell_in
+
+
+def _max_size_neg_risk_under_notional(
+    no_book: TokenBook,
+    no_limit: float,
+    buy_fees_en: bool,
+    sell_specs: list[tuple[TokenBook, float, bool]],
+    max_notional: float,
+    config: Settings,
+) -> tuple[float, float, float, float]:
+    """Return (size, buy_cost, sell_in, profit) with buy_cost <= max_notional."""
+    depth_hi = min(
+        [no_book.available_to_buy(no_limit)]
+        + [book.available_to_sell(lim) for book, lim, _ in sell_specs]
+    )
+    if depth_hi <= 1e-12:
+        return 0.0, 0.0, 0.0, 0.0
+
+    lo, hi = 0.0, depth_hi
+    for _ in range(64):
+        mid = (lo + hi) * 0.5
+        ok, buy_c, sell_c = _neg_risk_cashflows(no_book, no_limit, buy_fees_en, sell_specs, mid, config)
+        if not ok:
+            hi = mid
+            continue
+        if buy_c <= max_notional + 1e-9:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < 1e-10:
+            break
+
+    ok, buy_cost, sell_in = _neg_risk_cashflows(no_book, no_limit, buy_fees_en, sell_specs, lo, config)
+    if not ok or lo <= 1e-12:
+        return 0.0, 0.0, 0.0, 0.0
+    if buy_cost > max_notional and buy_cost <= max_notional + 1e-4:
+        buy_cost = float(max_notional)
+    profit = sell_in - buy_cost
+    return lo, buy_cost, sell_in, profit
 
 
 def _normalize_outcome(value: str) -> str:
@@ -51,15 +160,17 @@ class OpportunityScanner:
         if len(set(normalized_outcomes)) != len(normalized_outcomes):
             return []
 
-        yes_asks: list[tuple[float, OpportunityLeg, TokenBook]] = []
-        total_fees_per_unit = 0.0
+        legs_spec: list[tuple[TokenBook, float, bool]] = []
+        yes_templates: list[tuple[float, OpportunityLeg, TokenBook]] = []
+        naive_unit = 0.0
+
         for market in event.markets:
             book = books.get(market.yes_token_id)
             if book is None or book.best_ask <= 0:
                 return []
-            fee = _buy_fee(book.best_ask, 1.0, market.fees_enabled, self._config)
-            total_fees_per_unit += fee
-            yes_asks.append(
+            naive_unit += book.best_ask
+            legs_spec.append((book, book.best_ask, market.fees_enabled))
+            yes_templates.append(
                 (
                     book.best_ask,
                     OpportunityLeg(
@@ -76,16 +187,14 @@ class OpportunityScanner:
                 )
             )
 
-        unit_cost = sum(price for price, _, _ in yes_asks)
-        expected_profit_per_unit = 1.0 - unit_cost - total_fees_per_unit
-        net_edge_bps = _edge_bps(expected_profit_per_unit, unit_cost + total_fees_per_unit)
-        if net_edge_bps < self._config.min_complete_set_edge_bps or expected_profit_per_unit <= 0:
+        size, cash_out = _max_size_under_notional_complete_set(legs_spec, self._config.max_basket_notional, self._config)
+        if size <= 1e-12 or cash_out <= 0:
             return []
 
-        depth_limit = min(book.available_to_buy(leg.price) for _, leg, book in yes_asks)
-        capital_limit = self._config.max_basket_notional / max(unit_cost + total_fees_per_unit, 0.01)
-        size = max(min(depth_limit, capital_limit), 0.0)
-        if size <= 0:
+        payout = size * 1.0
+        profit = payout - cash_out
+        net_edge_bps = _edge_bps(profit, cash_out)
+        if net_edge_bps < self._config.min_complete_set_edge_bps or profit <= 0:
             return []
 
         legs = [
@@ -99,21 +208,23 @@ class OpportunityScanner:
                 size=size,
                 fees_enabled=leg.fees_enabled,
             )
-            for _, leg, _ in yes_asks
+            for _, leg, _ in yes_templates
         ]
-        capital_required = (unit_cost + total_fees_per_unit) * size
-        expected_profit = expected_profit_per_unit * size
+        avg_unit_cost = cash_out / size
         return [
             ArbOpportunity(
                 strategy_type="complete_set",
                 event_id=event.event_id,
                 event_title=event.title,
-                gross_edge_bps=_edge_bps(1.0 - unit_cost, unit_cost),
+                gross_edge_bps=_edge_bps(1.0 - naive_unit, naive_unit),
                 net_edge_bps=net_edge_bps,
-                capital_required=capital_required,
-                expected_profit=expected_profit,
+                capital_required=cash_out,
+                expected_profit=profit,
                 legs=legs,
-                rationale=f"Buy every YES leg for {unit_cost:.4f} and settle the complete set for 1.0000",
+                rationale=(
+                    f"Buy YES legs (~{avg_unit_cost:.4f}/set incl. fees at size {size:.4f}) "
+                    f"and settle complete set for 1.0000"
+                ),
                 requires_conversion=False,
                 settle_on_resolution=True,
                 cooldown_key=f"complete_set:{event.event_id}",
@@ -135,16 +246,16 @@ class OpportunityScanner:
                 continue
 
             sell_legs: list[tuple[float, OpportunityLeg, TokenBook]] = []
-            total_sell_fee_per_unit = 0.0
+            sell_specs: list[tuple[TokenBook, float, bool]] = []
             for market in event.markets:
                 if market.market_id == source_market.market_id:
                     continue
                 yes_book = books.get(market.yes_token_id)
                 if yes_book is None or yes_book.best_bid <= 0:
                     sell_legs = []
+                    sell_specs = []
                     break
-                fee = _sell_fee(yes_book.best_bid, 1.0, market.fees_enabled, self._config)
-                total_sell_fee_per_unit += fee
+                sell_specs.append((yes_book, yes_book.best_bid, market.fees_enabled))
                 sell_legs.append(
                     (
                         yes_book.best_bid,
@@ -164,19 +275,20 @@ class OpportunityScanner:
             if not sell_legs:
                 continue
 
-            buy_fee = _buy_fee(no_book.best_ask, 1.0, source_market.fees_enabled, self._config)
-            expected_sale_value = sum(price for price, _, _ in sell_legs)
-            expected_profit_per_unit = expected_sale_value - no_book.best_ask - buy_fee - total_sell_fee_per_unit
-            capital_per_unit = no_book.best_ask + buy_fee
-            net_edge_bps = _edge_bps(expected_profit_per_unit, capital_per_unit)
-            if net_edge_bps < self._config.min_neg_risk_edge_bps or expected_profit_per_unit <= 0:
+            naive_sale = sum(p for p, _, _ in sell_legs)
+            size, buy_cost, sell_in, profit = _max_size_neg_risk_under_notional(
+                no_book,
+                no_book.best_ask,
+                source_market.fees_enabled,
+                sell_specs,
+                self._config.max_basket_notional,
+                self._config,
+            )
+            if size <= 1e-12 or buy_cost <= 0:
                 continue
 
-            depth_limits = [no_book.available_to_buy(no_book.best_ask)]
-            depth_limits.extend(book.available_to_sell(leg.price) for _, leg, book in sell_legs)
-            capital_limit = self._config.max_basket_notional / max(capital_per_unit, 0.01)
-            size = max(min(*depth_limits, capital_limit), 0.0)
-            if size <= 0:
+            net_edge_bps = _edge_bps(profit, buy_cost)
+            if net_edge_bps < self._config.min_neg_risk_edge_bps or profit <= 0:
                 continue
 
             buy_leg = OpportunityLeg(
@@ -207,14 +319,14 @@ class OpportunityScanner:
                     strategy_type="neg_risk_conversion",
                     event_id=event.event_id,
                     event_title=event.title,
-                    gross_edge_bps=_edge_bps(expected_sale_value - no_book.best_ask, no_book.best_ask),
+                    gross_edge_bps=_edge_bps(naive_sale - no_book.best_ask, no_book.best_ask),
                     net_edge_bps=net_edge_bps,
-                    capital_required=capital_per_unit * size,
-                    expected_profit=expected_profit_per_unit * size,
+                    capital_required=buy_cost,
+                    expected_profit=profit,
                     legs=[buy_leg, *sell_legs_sized],
                     rationale=(
                         f"Buy NO on {source_market.outcome_name} at {no_book.best_ask:.4f}, "
-                        f"convert, then sell the other YES legs for {expected_sale_value:.4f}"
+                        f"convert, then sell other YES legs (net ~{profit / size:.4f}/unit at size {size:.4f})"
                     ),
                     requires_conversion=True,
                     settle_on_resolution=False,

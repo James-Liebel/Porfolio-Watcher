@@ -35,7 +35,8 @@ class ArbRiskManager:
             self.last_decision_reason = "current arb executor requires taker execution"
             return False, self.last_decision_reason
 
-        if opportunity.capital_required > self._config.max_basket_notional:
+        # Scanner sizing uses float binary search; allow microscopic overshoot vs cap.
+        if opportunity.capital_required > self._config.max_basket_notional + 1e-4:
             self.rejected_count += 1
             self.last_decision_reason = "basket notional above configured cap"
             return False, self.last_decision_reason

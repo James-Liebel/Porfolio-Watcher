@@ -93,7 +93,11 @@ class Settings(BaseSettings):
     allow_taker_execution: bool = Field(
         default=True, alias="ALLOW_TAKER_EXECUTION"
     )
-    paper_taker_fee_bps: float = Field(default=0.0, alias="PAPER_TAKER_FEE_BPS")
+    paper_taker_fee_bps: float = Field(
+        default=50.0,
+        alias="PAPER_TAKER_FEE_BPS",
+        description="Taker fee assumption (bps) for paper fills when market fees_enabled; tune to match Polymarket.",
+    )
     paper_maker_rebate_bps: float = Field(
         default=0.0, alias="PAPER_MAKER_REBATE_BPS"
     )

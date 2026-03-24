@@ -1,6 +1,5 @@
-# Quick local start (PowerShell) — replace paths with your clone location.
-# Run from the directory that contains this repo's `polymarket-btc-bot` folder,
-# or cd into `polymarket-btc-bot` first and drop the leading path below.
+# Quick local start (PowerShell) — replace <path-to-clone> with your repo path.
+# Full detail: polymarket-btc-bot/README.md ("Quick Start" and "Running paper vs live").
 
 cd <path-to-clone>\polymarket-btc-bot
 if (!(Test-Path .venv)) { python -m venv .venv }
@@ -8,9 +7,19 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 if (!(Test-Path .env)) { Copy-Item .env.example .env }
-# Edit .env with your keys — never commit .env
+# Edit .env — never commit .env
+#
+# --- Paper structural arb (default) ---
+# In .env: PAPER_TRADE=true
+# .\.venv\Scripts\python.exe scripts\check_env.py
+# python -m src
+#
+# --- "Live" flags ---
+# python -m src is still paper simulation for structural arb (no real Polymarket orders).
+# Legacy real API usage is only in src/execution/trader.py with no bundled main loop; see README.
+# If you set PAPER_TRADE=false for other experiments, run: scripts\check_env.py (must pass).
 
-# Optional: open the static dashboard (file://) — API must be running on 127.0.0.1
+# Optional: dashboard (file://) while bot runs — API on 127.0.0.1:8765
 # Start-Process .\frontend\index.html
 
 python -m src

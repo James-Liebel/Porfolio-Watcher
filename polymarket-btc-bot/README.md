@@ -47,17 +47,82 @@ Primary modules:
 Implementation blueprint:
 - `NEG_RISK_ARB_BLUEPRINT.md`
 
-## Quick Start
+## Quick Start (first-time setup)
 
-```bash
+From the `polymarket-btc-bot` directory:
+
+**Windows (PowerShell)**
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+Set-ExecutionPolicy -Scope Process Bypass
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env
+Copy-Item .env.example .env
+# Edit .env: at minimum keep PAPER_TRADE=true for structural arb
+.\.venv\Scripts\python.exe scripts\check_env.py
 python -m src
 ```
 
-The default mode is paper trading.
+**macOS / Linux (bash)**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env: at minimum keep PAPER_TRADE=true for structural arb
+python scripts/check_env.py
+python -m src
+```
+
+The bot prints JSON logs to the console and serves the control API on `127.0.0.1:8765` (see below). Open `frontend/index.html` in a browser if you want the local dashboard (with the process above still running).
+
+---
+
+## Running paper trading vs live trading
+
+### Paper trading (structural arb — supported)
+
+This is the **default** and what `python -m src` is built for.
+
+1. In `.env` set **`PAPER_TRADE=true`** (already the default in `.env.example`).
+2. Fill `.env` with placeholders or optional values: live Polymarket keys are **not** required for paper mode (`scripts/check_env.py` explains what is optional).
+3. Run from `polymarket-btc-bot`:
+
+   ```powershell
+   .\.venv\Scripts\python.exe -m src
+   ```
+
+   or, after `source .venv/bin/activate`:
+
+   ```bash
+   python -m src
+   ```
+
+4. Optional checks before a long session:
+
+   ```powershell
+   .\.venv\Scripts\python.exe scripts\check_env.py
+   .\.venv\Scripts\python.exe -m pytest tests -q
+   ```
+
+**Important:** The structural-arb engine always uses the in-repo **`PaperExchange`** (simulated fills, positions, and settlement). Your `PAPER_TRADE` flag mainly drives **labeling** in the API/UI and consistency with the rest of the config; it does not toggle a separate “live matching engine” for arb.
+
+### Live / real-money trading (read this before changing `.env`)
+
+- **`python -m src` does not place real Polymarket orders.** There is no live CLOB execution wired into the structural-arb loop in this repository. Setting **`PAPER_TRADE=false` does not turn on real arb trades** — you would still be on the paper exchange path for arb logic.
+- The codebase still contains a **legacy** `src/execution/trader.py` (`Trader`) that *can* talk to the real Polymarket API when **`PAPER_TRADE=false`** and API/wallet fields are set, but **there is no maintained `python -m …` entrypoint** that runs that directional loop alongside the current `main.py` (which only starts the arb engine). Treat live directional trading as **bring-your-own runner** or historical code, not something this repo starts by default.
+- If you later add live arb execution yourself, you would still follow wallet and API setup in **`setup/polymarket_wallet.md`**, use strong **`CONTROL_API_TOKEN`**, and never commit **`.env`**.
+
+**If you intend to use real keys at all** (even for experiments), set in `.env`:
+
+- `PAPER_TRADE=false`
+- `POLYMARKET_API_KEY`, `POLYMARKET_SECRET`, `POLYMARKET_PASSPHRASE`, `POLYMARKET_WALLET_ADDRESS`, `WALLET_PRIVATE_KEY` as described in `setup/polymarket_wallet.md`
+
+Then run **`python scripts/check_env.py`** — it must exit **0** in live mode (all required secrets present).
+
+---
 
 ## Control API
 

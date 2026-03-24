@@ -11,13 +11,30 @@ from ..config import Settings
 from ..storage.db import Database
 from .exchange import PaperExchange
 from .market_data import ClobMarketDataService
-from .models import ArbEvent, ArbOpportunity, BasketRecord, OrderIntent, utc_now
+from .models import ArbEvent, ArbOpportunity, BasketRecord, OrderIntent, TokenBook, utc_now
 from .pricing import OpportunityScanner
 from .repository import ArbRepository
 from .risk import ArbRiskManager
 from .universe import GammaUniverseService
 
 logger = structlog.get_logger(__name__)
+
+
+def _book_source_counts(books: dict[str, TokenBook]) -> dict[str, int]:
+    clob = synthetic = other = 0
+    for book in books.values():
+        src = (book.source or "").strip().lower()
+        if src == "clob":
+            clob += 1
+        elif src == "synthetic":
+            synthetic += 1
+        else:
+            other += 1
+    return {
+        "books_clob": clob,
+        "books_synthetic": synthetic,
+        "books_other": other,
+    }
 
 
 class ArbEngine:
@@ -110,6 +127,15 @@ class ArbEngine:
 
             books = await self._market_data.refresh(events)
             self._last_books = dict(books)
+            bsrc = _book_source_counts(books)
+            if bsrc["books_synthetic"] > 0:
+                logger.warning(
+                    "arb_engine.synthetic_books_in_cycle",
+                    synthetic=bsrc["books_synthetic"],
+                    clob=bsrc["books_clob"],
+                    other=bsrc["books_other"],
+                    total=len(books),
+                )
             self._exchange.sync_books(books)
             for book in books.values():
                 await self._repository.record_book(book)
@@ -146,6 +172,7 @@ class ArbEngine:
                 "auto_settled": auto_settled,
                 "opportunities": len(opportunities),
                 "executed": executed,
+                **bsrc,
             }
             return dict(self._last_cycle_summary)
 

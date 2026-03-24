@@ -135,7 +135,7 @@ Optional auth:
 
 Useful endpoints:
 - `GET /health`
-- `GET /summary`
+- `GET /summary` (includes `last_cycle.books_clob` / `books_synthetic` / `books_other` for data-quality checks)
 - `GET /events`
 - `GET /opportunities`
 - `GET /orders`

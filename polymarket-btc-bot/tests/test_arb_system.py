@@ -122,6 +122,30 @@ class StaticMarketData:
         return self._books
 
 
+@pytest.mark.anyio
+async def test_run_cycle_includes_book_source_counts():
+    event, books = _complete_set_event()
+    settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse([event]),
+            market_data=StaticMarketData(books),
+        )
+        summary = await engine.run_cycle()
+        assert summary["books_clob"] == 0
+        assert summary["books_synthetic"] == len(books)
+        assert summary["books_other"] == 0
+    finally:
+        os.unlink(path)
+
+
 def test_complete_set_scanner_finds_arbitrage():
     event, books = _complete_set_event()
     scanner = OpportunityScanner(_settings())

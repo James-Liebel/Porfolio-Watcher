@@ -17,9 +17,15 @@ This document summarizes how closely `PaperExchange` + `OpportunityScanner` mirr
 - **`PAPER_TAKER_FEE_BPS`** defaults to **50** (0.5%) in `Settings`. Polymarket’s live schedule can differ by market and time; treat this as a **conservative placeholder** and tune from official docs or your account.
 - Set to **`0`** only if you intentionally want fee-free paper (e.g. certain tests).
 
+## Observability
+
+Each cycle summary (and `GET /summary` → `last_cycle`) includes **`books_clob`**, **`books_synthetic`**, **`books_other`**: counts of `TokenBook.source` after the market-data refresh. If **`books_synthetic` > 0**, the engine logs **`arb_engine.synthetic_books_in_cycle`** at warning — those books are **not** live CLOB snapshots (client missing, empty book, or parse fallback). Treat opportunities as **lower confidence** until all tracked books are `clob`.
+
+Replay canonicalization includes these fields (default **0** for older JSONL sessions).
+
 ## Known limitations (unchanged)
 
-- **Books reset each cycle** from the network: local `_consume_book` does not persist into the next `sync_books` refresh, so you do not model “your size already lifted the resting liquidity” across polls.
+- **Books reset each cycle** from the network: local `_consume_book` does not persist into the next `sync_books` refresh, so you do not model “your size already lifted the resting liquidity” across polls. (Mitigation: watch `books_*` counts and size small vs displayed depth.)
 - **No latency, partial API failures, or queue priority** — FOK-style immediate match against a snapshot only.
 - **Settlement** remains a simplified $1/share binary payout model; verify against Polymarket rules for edge cases.
 - **Neg-risk conversion** in the exchange uses a simplified inventory split; scanner profit is cash-flow based (buy NO + sell YES legs) and should be close for the executed sequence but may not match every on-chain detail.

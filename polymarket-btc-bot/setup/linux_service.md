@@ -26,7 +26,7 @@ mkdir -p data logs
 
 Test the bot starts manually:
 ```bash
-python -m src.main
+python -m src
 # Ctrl+C to stop
 ```
 
@@ -40,19 +40,19 @@ Create `/etc/systemd/system/polymarket-bot.service`:
 sudo nano /etc/systemd/system/polymarket-bot.service
 ```
 
-Paste the following (replace `james` with your actual username and adjust paths):
+Paste the following (replace `YOUR_USER` and paths with your actual Linux user and clone location):
 
 ```ini
 [Unit]
-Description=Polymarket 5-minute BTC Trading Bot
+Description=Polymarket structural-arbitrage bot
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=james
-WorkingDirectory=/home/james/polymarket-btc-bot
-ExecStart=/home/james/polymarket-btc-bot/.venv/bin/python -m src.main
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/polymarket-btc-bot
+ExecStart=/home/YOUR_USER/polymarket-btc-bot/.venv/bin/python -m src
 Restart=always
 RestartSec=10
 StandardOutput=journal

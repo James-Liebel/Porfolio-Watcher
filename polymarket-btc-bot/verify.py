@@ -109,15 +109,17 @@ async def run():
 
         # Test 9: CORS middleware exists and is importable
         from src.control.api import cors_middleware, ControlAPI
-        print("[OK] Test 9: cors_middleware and ControlAPI import OK")
+        from src.arb.control import ArbControlAPI
+        print("[OK] Test 9: cors_middleware, ControlAPI (legacy), ArbControlAPI import OK")
 
-        # Test 10: ControlAPI has the new route methods
+        # Test 10: ControlAPI has funds routes; ArbControlAPI is the live control surface
         config2 = make_settings()
         risk2 = RiskManager(config2)
         ctrl = ControlAPI(config2, risk2, fresh_db)
-        assert hasattr(ctrl, "_add_funds"),    "Missing _add_funds method"
-        assert hasattr(ctrl, "_funds_history"),"Missing _funds_history method"
-        print("[OK] Test 10: ControlAPI has _add_funds and _funds_history methods")
+        assert hasattr(ctrl, "_add_funds"), "Missing _add_funds method"
+        assert hasattr(ctrl, "_funds_history"), "Missing _funds_history method"
+        assert hasattr(ArbControlAPI, "run"), "ArbControlAPI missing run()"
+        print("[OK] Test 10: legacy ControlAPI funds handlers + ArbControlAPI present")
 
     except AssertionError as e:
         errors.append(f"ASSERTION ERROR: {e}")

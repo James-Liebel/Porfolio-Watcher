@@ -1,3 +1,4 @@
+"""Read-only CLOB smoke test (no API keys). Safe to keep in-repo; do not add credentials."""
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds
 from decimal import Decimal

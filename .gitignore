@@ -1,0 +1,19 @@
+# Local secrets (never commit)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Python / tooling (if present at repo root)
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

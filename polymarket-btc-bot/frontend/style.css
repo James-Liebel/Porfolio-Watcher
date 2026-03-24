@@ -504,6 +504,54 @@ body {
 .val-negative { color: var(--accent-red); }
 .val-neutral  { color: var(--text-muted); }
 
+/* ── Events panel (arb dashboard) ────────────────────────────────────────── */
+.events-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 12px 16px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.event-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88rem;
+}
+.event-row:last-child { border-bottom: none; }
+.ev-title {
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ev-meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.empty-inline {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin: 0;
+  padding: 8px 0;
+}
+.status-pill.mini {
+  display: inline-flex;
+  padding: 2px 8px;
+  font-size: 0.65rem;
+  border-radius: 100px;
+  background: rgba(107,120,147,0.12);
+  color: var(--text-secondary);
+}
+
 /* ── Scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

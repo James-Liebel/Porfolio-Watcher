@@ -1,7 +1,7 @@
-# Skill: Polymarket Bot Controller
+# Skill: Polymarket Structural-Arb Controller
 
-**Name:** Polymarket Bot Controller  
-**Description:** Monitor and control the Polymarket 5-minute BTC/ETH/SOL/XRP trading bot running on this machine. Uses GTC maker orders with postOnly flag to earn maker rebates. Manages four assets independently via per-asset halt/resume controls.
+**Name:** Polymarket Structural-Arb Controller  
+**Description:** Monitor and control the **paper-first structural-arbitrage** Polymarket bot on this machine (`python -m src`). It scans complete-set and negative-risk opportunities, executes on a paper exchange, and exposes a local REST API. Legacy per-crypto directional trading is **not** the active runtime.
 
 ---
 
@@ -11,12 +11,17 @@
 
 **Triggers:** "bot status", "how is the bot doing", "check bot", "bot health", "is the bot running"
 
-**Command:**
+**Preferred (canonical):**
 ```bash
-curl -s http://localhost:8765/stats | python -m json.tool
+curl -s http://127.0.0.1:8765/summary | python -m json.tool
 ```
 
-**What it returns:** JSON with current bankroll, daily PnL, trade counts, open positions, and whether trading is halted.
+**Legacy-shaped JSON (maps arb fields into old key names for scripts):**
+```bash
+curl -s http://127.0.0.1:8765/stats | python -m json.tool
+```
+
+**What it returns:** Halt state, equity (`bankroll` in `/stats` compat), realized PnL, open baskets/positions, session execution counters, tracked event count.
 
 ---
 
@@ -24,14 +29,13 @@ curl -s http://localhost:8765/stats | python -m json.tool
 
 **Triggers:** "pause bot", "stop trading", "halt bot", "stop the bot", "pause trading"
 
-**Command:**
 ```bash
-curl -s -X POST http://localhost:8765/halt \
+curl -s -X POST http://127.0.0.1:8765/halt \
   -H "Content-Type: application/json" \
-  -d '{"reason": "manual via OpenClaw"}'
+  -d "{\"reason\": \"manual via OpenClaw\"}"
 ```
 
-**Note:** The bot will stop placing new orders immediately. Open positions will still be monitored and resolved.
+New opportunities are not executed while halted. Existing paper positions remain until settlement.
 
 ---
 
@@ -39,128 +43,119 @@ curl -s -X POST http://localhost:8765/halt \
 
 **Triggers:** "resume bot", "start trading again", "resume trading", "unpause bot"
 
-**Command:**
 ```bash
-curl -s -X POST http://localhost:8765/resume
+curl -s -X POST http://127.0.0.1:8765/resume \
+  -H "Content-Type: application/json" \
+  -d "{}"
 ```
 
 ---
 
-### Show recent trades
+### Show recent activity (orders)
 
-**Triggers:** "show recent trades", "last trades", "what trades did it make", "show me the trades"
+**Triggers:** "show recent trades", "last trades", "what trades did it make"
 
-**Command:**
+**Canonical:**
 ```bash
-curl -s "http://localhost:8765/trades?limit=10" | python -m json.tool
+curl -s "http://127.0.0.1:8765/orders?limit=15" | python -m json.tool
+```
+
+**Legacy list shape (maps order rows into old trade-like fields):**
+```bash
+curl -s "http://127.0.0.1:8765/trades?limit=15" | python -m json.tool
+```
+
+---
+
+### Trigger one scan cycle manually
+
+```bash
+curl -s -X POST http://127.0.0.1:8765/cycle \
+  -H "Content-Type: application/json" \
+  -d "{}"
 ```
 
 ---
 
 ### Restart the bot (Windows)
 
-**Triggers:** "restart bot" (on Windows)
-
 **Command:**
 ```cmd
 nssm restart polymarket-bot
 ```
 
-**Note:** Requires NSSM to be installed and the service to be registered. See `setup/windows_service.md`.
+**Note:** Requires NSSM and a registered service. See `setup/windows_service.md`.
 
 ---
 
 ### Restart the bot (Linux)
 
-**Triggers:** "restart bot" (on Linux)
-
-**Command:**
 ```bash
 sudo systemctl restart polymarket-bot
 ```
 
 ---
 
-### Check bot health (quick)
+### Quick health
 
-**Triggers:** "is the bot healthy", "quick health check"
-
-**Command:**
 ```bash
-curl -s http://localhost:8765/health
+curl -s http://127.0.0.1:8765/health
 ```
 
 ---
 
 ## Schedule Hooks
 
-### Morning Daily Summary
-
-**Schedule:** Every day at 08:00 local time
-
-**Action:** Call the stats endpoint and report back a summary:
+### Morning summary
 
 ```bash
-curl -s http://localhost:8765/stats
+curl -s http://127.0.0.1:8765/summary
 ```
 
-**OpenClaw should then say:**
-> "Good morning! Here's the Polymarket bot summary for today:
-> Bankroll: $[bankroll] | Daily PnL: $[daily_pnl] | Trades: [count] | Status: [halted/active]"
+**Suggested narration:** Equity, realized PnL, halted yes/no, open baskets, last cycle opportunity count.
 
 ---
 
----
+### Per-asset breakdown (legacy endpoint)
 
-### Asset performance breakdown
-
-**Triggers:** "which asset is doing best", "asset breakdown", "how are the assets doing", "per-asset stats"
-
-**Command:**
 ```bash
-curl -s http://localhost:8765/stats/assets | python -m json.tool
+curl -s http://127.0.0.1:8765/stats/assets | python -m json.tool
 ```
 
-**What it returns:** JSON with trades, wins, PnL, and open positions for each of BTC, ETH, SOL, and XRP today.
+**Note:** The structural-arb engine does not maintain per-spot-asset (BTC/ETH/…) PnL. This endpoint returns a **stable empty grid** for compatibility. Use `/summary`, `/positions`, and `/baskets` for real state.
 
 ---
 
-### Disable a specific asset
+### Disable a "specific asset" (legacy curl)
 
-**Triggers:** "disable SOL trading", "pause SOL", "stop trading SOL", "halt ETH", "disable XRP"
+**Triggers:** "disable SOL trading", "halt ETH", …
 
-**Command (replace SOL with the target asset):**
 ```bash
-curl -s -X POST http://localhost:8765/halt/asset \
+curl -s -X POST http://127.0.0.1:8765/halt/asset \
   -H "Content-Type: application/json" \
-  -d '{"asset": "SOL"}'
+  -d "{\"asset\": \"SOL\"}"
 ```
 
-**Note:** Only stops new orders for that asset. Other assets continue trading normally.
+**Behavior:** Validates the asset symbol then applies a **global** arb halt (same as `POST /halt`). There is no per-asset arb isolation.
 
 ---
 
-### Re-enable a specific asset
+### Re-enable after legacy per-asset halt
 
-**Triggers:** "enable SOL trading", "resume SOL", "start trading SOL again", "enable ETH", "resume XRP"
-
-**Command (replace SOL with the target asset):**
 ```bash
-curl -s -X POST http://localhost:8765/resume/asset \
+curl -s -X POST http://127.0.0.1:8765/resume/asset \
   -H "Content-Type: application/json" \
-  -d '{"asset": "SOL"}'
+  -d "{\"asset\": \"SOL\"}"
 ```
+
+**Behavior:** **Global** resume (same as `POST /resume`).
 
 ---
 
 ## Notes for OpenClaw
 
-- The bot runs on `localhost:8765` — this is only accessible from the local machine.
-- If `curl` returns a connection error, the bot process is not running. Use the restart command above.
-- The bot operates in **PAPER_TRADE** mode by default. Real money orders are only placed when `PAPER_TRADE=false` is set in `.env`.
-- All trade history is stored in `data/trades.db` (SQLite). Export with:
-  ```bash
-  sqlite3 data/trades.db .dump > trades_export.sql
-  ```
-- To check live logs on Windows: `Get-Content -Path logs\bot.log -Wait`
-- To check live logs on Linux: `journalctl -u polymarket-bot -f`
+- API binds to `127.0.0.1:8765` by default (`CONTROL_API_PORT`).
+- If `CONTROL_API_TOKEN` is set, send `X-Control-Token: <token>` or `Authorization: Bearer <token>` on requests **except** `GET /health`.
+- Default mode is **paper** (`PAPER_TRADE=true`).
+- State lives in `data/trades.db` (legacy tables plus `arb_*` tables).
+- Start the bot from the project root: `python -m src` (not `python -m src.main`).

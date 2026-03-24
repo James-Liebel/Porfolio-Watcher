@@ -60,8 +60,52 @@ class Settings(BaseSettings):
     max_concurrent_positions: int = Field(default=2, alias="MAX_CONCURRENT_POSITIONS")
     initial_bankroll: float = Field(default=300.0, alias="INITIAL_BANKROLL")
 
+    # ── Structural-arb runtime ───────────────────────────────────────────
+    gamma_base_url: str = Field(
+        default="https://gamma-api.polymarket.com", alias="GAMMA_BASE_URL"
+    )
+    clob_host: str = Field(
+        default="https://clob.polymarket.com", alias="CLOB_HOST"
+    )
+    arb_poll_seconds: int = Field(default=20, alias="ARB_POLL_SECONDS")
+    max_tracked_events: int = Field(default=100, alias="MAX_TRACKED_EVENTS")
+    min_event_liquidity: float = Field(default=2000.0, alias="MIN_EVENT_LIQUIDITY")
+    min_outcomes_per_event: int = Field(default=2, alias="MIN_OUTCOMES_PER_EVENT")
+    min_complete_set_edge_bps: float = Field(
+        default=25.0, alias="MIN_COMPLETE_SET_EDGE_BPS"
+    )
+    min_neg_risk_edge_bps: float = Field(
+        default=40.0, alias="MIN_NEG_RISK_EDGE_BPS"
+    )
+    max_event_exposure_pct: float = Field(
+        default=0.10, alias="MAX_EVENT_EXPOSURE_PCT"
+    )
+    max_basket_notional: float = Field(default=50.0, alias="MAX_BASKET_NOTIONAL")
+    max_total_open_baskets: int = Field(
+        default=4, alias="MAX_TOTAL_OPEN_BASKETS"
+    )
+    max_opportunities_per_cycle: int = Field(
+        default=3, alias="MAX_OPPORTUNITIES_PER_CYCLE"
+    )
+    opportunity_cooldown_seconds: int = Field(
+        default=300, alias="OPPORTUNITY_COOLDOWN_SECONDS"
+    )
+    allow_taker_execution: bool = Field(
+        default=True, alias="ALLOW_TAKER_EXECUTION"
+    )
+    paper_taker_fee_bps: float = Field(default=0.0, alias="PAPER_TAKER_FEE_BPS")
+    paper_maker_rebate_bps: float = Field(
+        default=0.0, alias="PAPER_MAKER_REBATE_BPS"
+    )
+    auto_settle_resolved_events: bool = Field(
+        default=True, alias="AUTO_SETTLE_RESOLVED_EVENTS"
+    )
+    replay_output_dir: str = Field(default="data/replays", alias="REPLAY_OUTPUT_DIR")
+
     # ── Control API ─────────────────────────────────────────────────────
     control_api_port: int = Field(default=8765, alias="CONTROL_API_PORT")
+    # Empty = no token auth on loopback API; set a strong random value if the port may be reachable by others.
+    control_api_token: str = Field(default="", alias="CONTROL_API_TOKEN")
 
     # ── Logging ─────────────────────────────────────────────────────────
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")

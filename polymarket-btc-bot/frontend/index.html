@@ -3,20 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Polymarket Bot — Dashboard</title>
-  <meta name="description" content="Live monitoring dashboard for the Polymarket BTC/ETH/SOL/XRP prediction market trading bot." />
+  <title>Polymarket — Structural Arb Dashboard</title>
+  <meta name="description" content="Local dashboard for the paper-first Polymarket structural-arbitrage bot (complete-set and neg-risk scanning)." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- ── Header ─────────────────────────────────────────────────────── -->
   <header class="top-bar">
     <div class="top-bar-left">
       <div class="logo">
         <span class="logo-icon">◈</span>
-        <span class="logo-text">PolyBot</span>
+        <span class="logo-text">PolyArb</span>
       </div>
       <span id="mode-badge" class="badge badge-paper">PAPER</span>
       <div id="status-pill" class="status-pill status-connecting">
@@ -26,165 +25,124 @@
     </div>
     <div class="top-bar-right">
       <div class="bankroll-display">
-        <span class="bankroll-label">Bankroll</span>
+        <span class="bankroll-label">Equity</span>
         <span id="bankroll" class="bankroll-amount">—</span>
       </div>
       <div class="pnl-display">
-        <span class="pnl-label">Today's P&amp;L</span>
+        <span class="pnl-label">Realized P&amp;L</span>
         <span id="daily-pnl" class="pnl-amount">—</span>
       </div>
       <div class="header-actions">
         <button id="btn-add-money" class="btn btn-primary" onclick="openAddMoneyModal()">＋ Add Money</button>
-        <button id="btn-halt" class="btn btn-danger" onclick="haltAll()">⏹ Halt All</button>
+        <button id="btn-halt" class="btn btn-danger" onclick="haltAll()">⏹ Halt</button>
         <button id="btn-resume" class="btn btn-success" onclick="resumeAll()">▶ Resume</button>
       </div>
     </div>
   </header>
 
-  <!-- ── Main ─────────────────────────────────────────────────────── -->
   <main class="main-content">
 
-    <!-- Stats cards row -->
     <section class="stats-row">
       <div class="stat-card">
-        <div class="stat-icon">📊</div>
+        <div class="stat-icon">🔎</div>
         <div class="stat-body">
-          <div class="stat-label">Trades Today</div>
+          <div class="stat-label">Opportunities (last scan)</div>
           <div id="stat-trades" class="stat-value">—</div>
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon">🏆</div>
+        <div class="stat-icon">✓</div>
         <div class="stat-body">
-          <div class="stat-label">Wins</div>
+          <div class="stat-label">Executed (session)</div>
           <div id="stat-wins" class="stat-value">—</div>
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon">📉</div>
+        <div class="stat-icon">⊘</div>
         <div class="stat-body">
-          <div class="stat-label">Losses</div>
+          <div class="stat-label">Rejected (session)</div>
           <div id="stat-losses" class="stat-value">—</div>
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon">🎯</div>
+        <div class="stat-icon">◎</div>
         <div class="stat-body">
-          <div class="stat-label">Win Rate</div>
+          <div class="stat-label">Opps (last cycle)</div>
           <div id="stat-winrate" class="stat-value">—</div>
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon">🔓</div>
+        <div class="stat-icon">🧺</div>
         <div class="stat-body">
-          <div class="stat-label">Open Positions</div>
+          <div class="stat-label">Open baskets</div>
           <div id="stat-open" class="stat-value">—</div>
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon">⚡</div>
+        <div class="stat-icon">📍</div>
         <div class="stat-body">
-          <div class="stat-label">Not Filled</div>
+          <div class="stat-label">Open positions</div>
           <div id="stat-notfilled" class="stat-value">—</div>
         </div>
       </div>
     </section>
 
-    <!-- Asset grid -->
     <section class="section">
-      <h2 class="section-title">Asset Breakdown <span class="section-subtitle">Today</span></h2>
-      <div class="asset-grid">
-        <div class="asset-card" id="asset-BTC">
-          <div class="asset-header">
-            <span class="asset-name">₿ BTC</span>
-            <div class="asset-controls">
-              <button class="btn-asset-halt" onclick="toggleAssetHalt('BTC')" id="halt-btn-BTC">Halt</button>
-            </div>
-          </div>
-          <div class="asset-stats">
-            <div class="asset-stat"><span class="as-label">Trades</span><span class="as-val" id="asset-BTC-trades">—</span></div>
-            <div class="asset-stat"><span class="as-label">Wins</span><span class="as-val" id="asset-BTC-wins">—</span></div>
-            <div class="asset-stat"><span class="as-label">P&amp;L</span><span class="as-val pnl-val" id="asset-BTC-pnl">—</span></div>
-            <div class="asset-stat"><span class="as-label">Open</span><span class="as-val" id="asset-BTC-open">—</span></div>
-          </div>
-        </div>
-        <div class="asset-card" id="asset-ETH">
-          <div class="asset-header">
-            <span class="asset-name">Ξ ETH</span>
-            <div class="asset-controls">
-              <button class="btn-asset-halt" onclick="toggleAssetHalt('ETH')" id="halt-btn-ETH">Halt</button>
-            </div>
-          </div>
-          <div class="asset-stats">
-            <div class="asset-stat"><span class="as-label">Trades</span><span class="as-val" id="asset-ETH-trades">—</span></div>
-            <div class="asset-stat"><span class="as-label">Wins</span><span class="as-val" id="asset-ETH-wins">—</span></div>
-            <div class="asset-stat"><span class="as-label">P&amp;L</span><span class="as-val pnl-val" id="asset-ETH-pnl">—</span></div>
-            <div class="asset-stat"><span class="as-label">Open</span><span class="as-val" id="asset-ETH-open">—</span></div>
-          </div>
-        </div>
-        <div class="asset-card" id="asset-SOL">
-          <div class="asset-header">
-            <span class="asset-name">◎ SOL</span>
-            <div class="asset-controls">
-              <button class="btn-asset-halt" onclick="toggleAssetHalt('SOL')" id="halt-btn-SOL">Halt</button>
-            </div>
-          </div>
-          <div class="asset-stats">
-            <div class="asset-stat"><span class="as-label">Trades</span><span class="as-val" id="asset-SOL-trades">—</span></div>
-            <div class="asset-stat"><span class="as-label">Wins</span><span class="as-val" id="asset-SOL-wins">—</span></div>
-            <div class="asset-stat"><span class="as-label">P&amp;L</span><span class="as-val pnl-val" id="asset-SOL-pnl">—</span></div>
-            <div class="asset-stat"><span class="as-label">Open</span><span class="as-val" id="asset-SOL-open">—</span></div>
-          </div>
-        </div>
-        <div class="asset-card" id="asset-XRP">
-          <div class="asset-header">
-            <span class="asset-name">✦ XRP</span>
-            <div class="asset-controls">
-              <button class="btn-asset-halt" onclick="toggleAssetHalt('XRP')" id="halt-btn-XRP">Halt</button>
-            </div>
-          </div>
-          <div class="asset-stats">
-            <div class="asset-stat"><span class="as-label">Trades</span><span class="as-val" id="asset-XRP-trades">—</span></div>
-            <div class="asset-stat"><span class="as-label">Wins</span><span class="as-val" id="asset-XRP-wins">—</span></div>
-            <div class="asset-stat"><span class="as-label">P&amp;L</span><span class="as-val pnl-val" id="asset-XRP-pnl">—</span></div>
-            <div class="asset-stat"><span class="as-label">Open</span><span class="as-val" id="asset-XRP-open">—</span></div>
-          </div>
-        </div>
+      <h2 class="section-title">Tracked events <span class="section-subtitle">from last universe refresh</span></h2>
+      <div id="events-list" class="events-panel">
+        <p class="empty-inline">Waiting for data…</p>
       </div>
     </section>
 
-    <!-- Recent Trades -->
     <section class="section">
       <div class="section-header-row">
-        <h2 class="section-title">Recent Trades</h2>
+        <h2 class="section-title">Recent baskets</h2>
         <span id="refresh-timer" class="refresh-label">Refreshing in 5s</span>
       </div>
       <div class="table-wrapper">
-        <table class="trades-table" id="trades-table">
+        <table class="trades-table" id="baskets-table">
           <thead>
             <tr>
-              <th>Time</th>
-              <th>Asset</th>
-              <th>Market</th>
-              <th>Side</th>
-              <th>Size</th>
-              <th>Price</th>
-              <th>Edge</th>
-              <th>Outcome</th>
+              <th>Created</th>
+              <th>Strategy</th>
+              <th>Status</th>
+              <th>Capital</th>
               <th>P&amp;L</th>
-              <th>Mode</th>
+              <th>Id</th>
             </tr>
           </thead>
-          <tbody id="trades-body">
-            <tr><td colspan="10" class="empty-state">Waiting for data…</td></tr>
+          <tbody id="baskets-body">
+            <tr><td colspan="6" class="empty-state">Waiting for data…</td></tr>
           </tbody>
         </table>
       </div>
     </section>
 
-    <!-- Deposits History -->
     <section class="section">
-      <h2 class="section-title">Deposit History</h2>
+      <h2 class="section-title">Recent orders</h2>
+      <div class="table-wrapper">
+        <table class="trades-table" id="orders-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Market</th>
+              <th>Side</th>
+              <th>Size</th>
+              <th>Price</th>
+              <th>Route</th>
+              <th>Status</th>
+              <th>Basket</th>
+            </tr>
+          </thead>
+          <tbody id="orders-body">
+            <tr><td colspan="8" class="empty-state">Waiting for data…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Deposit history</h2>
       <div class="table-wrapper">
         <table class="trades-table" id="deposits-table">
           <thead>
@@ -203,12 +161,11 @@
 
   </main>
 
-  <!-- ── Add Money Modal ──────────────────────────────────────────── -->
   <div id="modal-overlay" class="modal-overlay hidden" onclick="closeAddMoneyModal(event)">
     <div class="modal-box" onclick="event.stopPropagation()">
       <button class="modal-close" onclick="closeAddMoneyModal()">✕</button>
-      <h2 class="modal-title">Add Money to Bankroll</h2>
-      <p class="modal-subtitle">This records a deposit and immediately updates the bot's bankroll and bet sizing.</p>
+      <h2 class="modal-title">Add paper capital</h2>
+      <p class="modal-subtitle">Records a deposit in SQLite and increases the paper exchange cash/equity used by the arb engine.</p>
       <div class="form-group">
         <label class="form-label" for="deposit-amount">Amount (USD)</label>
         <input id="deposit-amount" class="form-input" type="number" min="0.01" step="0.01" placeholder="e.g. 100.00" />
@@ -220,10 +177,10 @@
       <div id="modal-error" class="modal-error hidden"></div>
       <div class="modal-actions">
         <button class="btn btn-ghost" onclick="closeAddMoneyModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="submitDeposit()" id="deposit-submit-btn">Confirm Deposit</button>
+        <button class="btn btn-primary" onclick="submitDeposit()" id="deposit-submit-btn">Confirm</button>
       </div>
       <div id="deposit-success" class="deposit-success hidden">
-        <span class="success-icon">✓</span> Deposit recorded! New bankroll: <strong id="new-bankroll-val"></strong>
+        <span class="success-icon">✓</span> Deposit recorded! New equity: <strong id="new-bankroll-val"></strong>
       </div>
     </div>
   </div>

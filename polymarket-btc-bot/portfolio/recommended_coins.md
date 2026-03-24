@@ -42,5 +42,7 @@ Set these in `.env`:
 - `TRADE_AVAX=true`
 - `TRADE_LINK=true`
 
-If any asset underperforms, disable it without stopping the bot by using
-the control API `POST /halt/asset` endpoint.
+The **active** runtime is structural arbitrage (`python -m src`). Per-spot-asset
+flags above apply to **legacy directional** code paths only. To pause the arb
+engine globally, use `POST /halt` on the control API; `POST /halt/asset` exists
+only as a compatibility alias and also halts the whole arb runtime.

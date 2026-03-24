@@ -20,15 +20,27 @@ venv/
 env/
 ENV/
 
-# Data / database
+# Data / database / session artifacts
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/replays/
 *.sql
 
 # Logs
 logs/
 *.log
+
+# Local test / diagnostic captures (may contain absolute paths)
+test_out*.txt
+test_output.txt
+
+# Pytest temp dirs (anyio / pytest on Windows)
+pytest-cache-files-*/
+tmp*/
+
+# Local scratch
+*.tmp
 
 # IDE
 .vscode/

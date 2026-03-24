@@ -26,10 +26,10 @@ Find your Python executable:
 ```cmd
 where python
 ```
-Example output: `C:\Users\james\AppData\Local\Programs\Python\Python311\python.exe`
+Example output: `C:\Users\<YourWindowsUser>\AppData\Local\Programs\Python\Python311\python.exe`
 
-Find your bot directory — it should be something like:
-`C:\Users\james\Porfolio-Watcher\polymarket-btc-bot`
+Find your bot directory — use the folder where you cloned this repo, e.g.
+`C:\path\to\polymarket-btc-bot`
 
 ---
 
@@ -38,15 +38,15 @@ Find your bot directory — it should be something like:
 Open **Command Prompt as Administrator** and run:
 
 ```cmd
-nssm install polymarket-bot "C:\Users\james\AppData\Local\Programs\Python\Python311\python.exe" "-m src.main"
+nssm install polymarket-bot "C:\Users\<YourWindowsUser>\AppData\Local\Programs\Python\Python311\python.exe" "-m src"
 ```
 
-Then configure it:
+Then configure it (replace `C:\path\to\polymarket-btc-bot` with your real project path):
 
 ```cmd
-nssm set polymarket-bot AppDirectory "C:\Users\james\Porfolio-Watcher\polymarket-btc-bot"
-nssm set polymarket-bot AppStdout "C:\Users\james\Porfolio-Watcher\polymarket-btc-bot\logs\bot.log"
-nssm set polymarket-bot AppStderr "C:\Users\james\Porfolio-Watcher\polymarket-btc-bot\logs\bot_error.log"
+nssm set polymarket-bot AppDirectory "C:\path\to\polymarket-btc-bot"
+nssm set polymarket-bot AppStdout "C:\path\to\polymarket-btc-bot\logs\bot.log"
+nssm set polymarket-bot AppStderr "C:\path\to\polymarket-btc-bot\logs\bot_error.log"
 nssm set polymarket-bot AppStdoutCreationDisposition 4
 nssm set polymarket-bot AppStderrCreationDisposition 4
 nssm set polymarket-bot AppRotateFiles 1
@@ -58,7 +58,7 @@ nssm set polymarket-bot ObjectName LocalSystem
 
 Create the logs folder first:
 ```cmd
-mkdir "C:\Users\james\Porfolio-Watcher\polymarket-btc-bot\logs"
+mkdir "C:\path\to\polymarket-btc-bot\logs"
 ```
 
 ---
@@ -89,7 +89,7 @@ Also check via Services panel:
 
 In PowerShell:
 ```powershell
-Get-Content -Path "C:\Users\james\Porfolio-Watcher\polymarket-btc-bot\logs\bot.log" -Wait -Tail 50
+Get-Content -Path "C:\path\to\polymarket-btc-bot\logs\bot.log" -Wait -Tail 50
 ```
 
 Or just open the log file in any text editor — it updates in real time.
@@ -143,4 +143,4 @@ powercfg /change monitor-timeout-ac 0
 | Service won't start | Check `logs\bot_error.log` for Python errors |
 | `.env` not found | Make sure AppDirectory is set to the bot folder |
 | Port 8765 in use | Change `CONTROL_API_PORT` in `.env` |
-| Service starts but crashes | Run `python -m src.main` manually first to debug |
+| Service starts but crashes | Run `python -m src` manually first to debug |

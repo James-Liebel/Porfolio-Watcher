@@ -1,0 +1,546 @@
+from __future__ import annotations
+
+import os
+import tempfile
+
+import pytest
+import aiohttp.web as web
+from aiohttp.test_utils import TestClient, TestServer
+
+from src.arb.control import ArbControlAPI, cors_middleware
+from src.arb.engine import ArbEngine
+from src.arb.exchange import PaperExchange
+from src.arb.models import ArbEvent, OrderIntent, OutcomeMarket, PriceLevel, TokenBook
+from src.arb.pricing import OpportunityScanner
+from src.arb.replay import replay_cycle_records
+from src.arb.repository import ArbRepository
+from src.config import Settings
+from src.storage.db import Database
+
+
+def _settings(**overrides) -> Settings:
+    defaults = dict(
+        paper_trade=True,
+        initial_bankroll=100.0,
+        control_api_port=18765,
+        log_level="WARNING",
+        max_basket_notional=50.0,
+        min_event_liquidity=0.0,
+        min_outcomes_per_event=2,
+        min_complete_set_edge_bps=10.0,
+        min_neg_risk_edge_bps=10.0,
+        allow_taker_execution=True,
+        paper_taker_fee_bps=0.0,
+        paper_maker_rebate_bps=0.0,
+        opportunity_cooldown_seconds=0,
+        max_total_open_baskets=10,
+        max_opportunities_per_cycle=5,
+        max_event_exposure_pct=1.0,
+        daily_loss_cap=0.50,
+        arb_poll_seconds=1,
+    )
+    defaults.update(overrides)
+    return Settings(_env_file=None, **defaults)
+
+
+def _complete_set_event() -> tuple[ArbEvent, dict[str, TokenBook]]:
+    event = ArbEvent(
+        event_id="event-1",
+        title="Who wins?",
+        markets=[
+            OutcomeMarket("event-1", "m1", "A?", "A", "y1", "n1", tick_size=0.01),
+            OutcomeMarket("event-1", "m2", "B?", "B", "y2", "n2", tick_size=0.01),
+            OutcomeMarket("event-1", "m3", "C?", "C", "y3", "n3", tick_size=0.01),
+        ],
+    )
+    books = {
+        "y1": TokenBook("y1", event_time(), 0.29, 0.30, bids=[PriceLevel(0.29, 100)], asks=[PriceLevel(0.30, 100)]),
+        "y2": TokenBook("y2", event_time(), 0.24, 0.25, bids=[PriceLevel(0.24, 100)], asks=[PriceLevel(0.25, 100)]),
+        "y3": TokenBook("y3", event_time(), 0.19, 0.20, bids=[PriceLevel(0.19, 100)], asks=[PriceLevel(0.20, 100)]),
+        "n1": TokenBook("n1", event_time(), 0.69, 0.70, bids=[PriceLevel(0.69, 100)], asks=[PriceLevel(0.70, 100)]),
+        "n2": TokenBook("n2", event_time(), 0.74, 0.75, bids=[PriceLevel(0.74, 100)], asks=[PriceLevel(0.75, 100)]),
+        "n3": TokenBook("n3", event_time(), 0.79, 0.80, bids=[PriceLevel(0.79, 100)], asks=[PriceLevel(0.80, 100)]),
+    }
+    return event, books
+
+
+def _neg_risk_event() -> tuple[ArbEvent, dict[str, TokenBook]]:
+    event = ArbEvent(
+        event_id="event-neg",
+        title="Election",
+        neg_risk=True,
+        markets=[
+            OutcomeMarket("event-neg", "m1", "A?", "A", "y1", "n1", tick_size=0.01),
+            OutcomeMarket("event-neg", "m2", "B?", "B", "y2", "n2", tick_size=0.01),
+            OutcomeMarket("event-neg", "m3", "C?", "C", "y3", "n3", tick_size=0.01),
+        ],
+    )
+    books = {
+        "y1": TokenBook("y1", event_time(), 0.54, 0.55, bids=[PriceLevel(0.54, 100)], asks=[PriceLevel(0.55, 100)]),
+        "n1": TokenBook("n1", event_time(), 0.29, 0.30, bids=[PriceLevel(0.29, 100)], asks=[PriceLevel(0.30, 100)]),
+        "y2": TokenBook("y2", event_time(), 0.24, 0.25, bids=[PriceLevel(0.24, 100)], asks=[PriceLevel(0.25, 100)]),
+        "n2": TokenBook("n2", event_time(), 0.74, 0.75, bids=[PriceLevel(0.74, 100)], asks=[PriceLevel(0.75, 100)]),
+        "y3": TokenBook("y3", event_time(), 0.20, 0.21, bids=[PriceLevel(0.20, 100)], asks=[PriceLevel(0.21, 100)]),
+        "n3": TokenBook("n3", event_time(), 0.78, 0.79, bids=[PriceLevel(0.78, 100)], asks=[PriceLevel(0.79, 100)]),
+    }
+    return event, books
+
+
+def event_time():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
+class StaticUniverse:
+    def __init__(self, events=None, refresh_sequence=None, resolution_map=None):
+        self._events = events or []
+        self._refresh_sequence = refresh_sequence
+        self._resolution_map = resolution_map or {}
+        self._refresh_calls = 0
+
+    async def refresh(self):
+        if self._refresh_sequence is not None:
+            index = min(self._refresh_calls, len(self._refresh_sequence) - 1)
+            self._refresh_calls += 1
+            return self._refresh_sequence[index]
+        return self._events
+
+    async def close(self):
+        return None
+
+    async def lookup_resolution(self, event_id, fallback_event=None):
+        return self._resolution_map.get(event_id, (fallback_event, None, "unresolved"))
+
+
+class StaticMarketData:
+    def __init__(self, books):
+        self._books = books
+
+    async def refresh(self, events):
+        del events
+        return self._books
+
+
+def test_complete_set_scanner_finds_arbitrage():
+    event, books = _complete_set_event()
+    scanner = OpportunityScanner(_settings())
+    opportunities = scanner.scan([event], books)
+
+    complete_set = [opp for opp in opportunities if opp.strategy_type == "complete_set"]
+    assert len(complete_set) == 1
+    assert complete_set[0].net_edge_bps > 0
+    assert len(complete_set[0].legs) == 3
+
+
+def test_neg_risk_scanner_finds_conversion_trade():
+    event, books = _neg_risk_event()
+    scanner = OpportunityScanner(_settings())
+    opportunities = scanner.scan([event], books)
+
+    neg_risk = [opp for opp in opportunities if opp.strategy_type == "neg_risk_conversion"]
+    assert len(neg_risk) >= 1
+    assert neg_risk[0].convert_from_market_id == "m1"
+    assert neg_risk[0].expected_profit > 0
+
+
+def test_paper_exchange_converts_and_realizes_profit():
+    event, books = _neg_risk_event()
+    exchange = PaperExchange(_settings())
+    exchange.set_starting_cash(100.0)
+    exchange.update_universe([event])
+    exchange.sync_books(books)
+
+    order, fills = exchange.place_order(
+        OrderIntent(
+            basket_id="b1",
+            opportunity_id="o1",
+            token_id="n1",
+            market_id="m1",
+            event_id=event.event_id,
+            contract_side="NO",
+            side="BUY",
+            price=0.30,
+            size=5.0,
+            order_type="fok",
+            maker_or_taker="taker",
+        )
+    )
+    assert order.status == "filled"
+    assert sum(fill.size for fill in fills) == pytest.approx(5.0)
+
+    outputs = exchange.convert_neg_risk(event, "m1", 5.0)
+    assert len(outputs) == 2
+    assert exchange.get_positions()[0].contract_side == "YES"
+
+    sell_1, _ = exchange.place_order(
+        OrderIntent(
+            basket_id="b1",
+            opportunity_id="o1",
+            token_id="y2",
+            market_id="m2",
+            event_id=event.event_id,
+            contract_side="YES",
+            side="SELL",
+            price=0.24,
+            size=5.0,
+            order_type="fok",
+            maker_or_taker="taker",
+        )
+    )
+    sell_2, _ = exchange.place_order(
+        OrderIntent(
+            basket_id="b1",
+            opportunity_id="o1",
+            token_id="y3",
+            market_id="m3",
+            event_id=event.event_id,
+            contract_side="YES",
+            side="SELL",
+            price=0.20,
+            size=5.0,
+            order_type="fok",
+            maker_or_taker="taker",
+        )
+    )
+
+    assert sell_1.status == "filled"
+    assert sell_2.status == "filled"
+    assert exchange.realized_pnl == pytest.approx(0.7, abs=1e-6)
+    assert exchange.get_positions() == []
+
+
+def test_fok_rejection_does_not_consume_book():
+    event, books = _neg_risk_event()
+    books["n1"] = TokenBook(
+        "n1",
+        event_time(),
+        0.29,
+        0.30,
+        bids=[PriceLevel(0.29, 2.0)],
+        asks=[PriceLevel(0.30, 2.0)],
+    )
+    exchange = PaperExchange(_settings())
+    exchange.set_starting_cash(100.0)
+    exchange.update_universe([event])
+    exchange.sync_books(books)
+
+    order, fills = exchange.place_order(
+        OrderIntent(
+            basket_id="b1",
+            opportunity_id="o1",
+            token_id="n1",
+            market_id="m1",
+            event_id=event.event_id,
+            contract_side="NO",
+            side="BUY",
+            price=0.30,
+            size=5.0,
+            order_type="fok",
+            maker_or_taker="taker",
+        )
+    )
+
+    assert order.status == "rejected"
+    assert fills == []
+    assert exchange.get_positions() == []
+    remaining_book = exchange.book_for_token("n1")
+    assert remaining_book is not None
+    assert remaining_book.asks[0].size == pytest.approx(2.0)
+
+
+def test_neg_risk_scanner_skips_augmented_and_other_outcomes():
+    event, books = _neg_risk_event()
+    event.neg_risk_augmented = True
+    event.markets[2].outcome_name = "Other"
+    scanner = OpportunityScanner(_settings())
+
+    opportunities = scanner.scan([event], books)
+
+    neg_risk = [opp for opp in opportunities if opp.strategy_type == "neg_risk_conversion"]
+    assert neg_risk == []
+
+
+@pytest.mark.anyio
+async def test_engine_executes_complete_set_and_settles():
+    event, books = _complete_set_event()
+    settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse([event]),
+            market_data=StaticMarketData(books),
+        )
+
+        summary = await engine.run_cycle()
+        assert summary["executed"] == 1
+        assert len(engine.exchange.get_positions()) == 3
+
+        settlement = await engine.settle_event(event.event_id, "m2")
+        assert settlement["pnl_realized"] == pytest.approx(1.25, abs=1e-6)
+        assert engine.exchange.get_positions() == []
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.anyio
+async def test_engine_auto_settles_when_event_leaves_active_universe():
+    event, books = _complete_set_event()
+    settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
+    resolved_event = ArbEvent(
+        event_id=event.event_id,
+        title=event.title,
+        status="resolved",
+        markets=event.markets,
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse(
+                refresh_sequence=[[event], []],
+                resolution_map={event.event_id: (resolved_event, "m2", "test-resolution")},
+            ),
+            market_data=StaticMarketData(books),
+        )
+
+        first = await engine.run_cycle()
+        assert first["executed"] == 1
+        assert len(engine.exchange.get_positions()) == 3
+
+        second = await engine.run_cycle()
+        assert second["auto_settled"] == 1
+        assert engine.exchange.get_positions() == []
+        baskets = engine.baskets_snapshot()
+        assert baskets[0]["status"] == "SETTLED"
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.anyio
+async def test_engine_rejects_invalid_settlement_market():
+    event, books = _complete_set_event()
+    settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse([event]),
+            market_data=StaticMarketData(books),
+        )
+
+        await engine.run_cycle()
+
+        with pytest.raises(ValueError):
+            await engine.settle_event(event.event_id, "bad-market")
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.anyio
+async def test_engine_restores_runtime_state_after_restart():
+    event, books = _complete_set_event()
+    settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse([event]),
+            market_data=StaticMarketData(books),
+        )
+        await engine.run_cycle()
+
+        restarted = ArbEngine(
+            config=settings,
+            legacy_db=Database(path=path),
+            repository=ArbRepository(path=path),
+            universe=StaticUniverse([event]),
+            market_data=StaticMarketData(books),
+        )
+        await restarted.initialize()
+
+        assert restarted.exchange.cash == pytest.approx(96.25, abs=1e-6)
+        assert len(restarted.exchange.get_positions()) == 3
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.anyio
+async def test_control_api_requires_token_when_configured():
+    settings = _settings(control_api_token="secret-token")
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse([]),
+            market_data=StaticMarketData({}),
+        )
+        await engine.initialize()
+        control = ArbControlAPI(settings, engine, legacy_db, repository)
+
+        app = web.Application(middlewares=[cors_middleware, control.auth_middleware])
+        app.router.add_get("/summary", control._summary)
+        app.router.add_get("/health", control._health)
+
+        async with TestClient(TestServer(app)) as client:
+            unauthorized = await client.get("/summary")
+            assert unauthorized.status == 401
+
+            authorized = await client.get("/summary", headers={"X-Control-Token": "secret-token"})
+            assert authorized.status == 200
+
+            health = await client.get("/health")
+            assert health.status == 200
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.anyio
+async def test_full_engine_replay_reproduces_recorded_cycles():
+    event, books = _complete_set_event()
+    settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
+    resolved_event = ArbEvent(
+        event_id=event.event_id,
+        title=event.title,
+        status="resolved",
+        markets=event.markets,
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse(
+                refresh_sequence=[[event], []],
+                resolution_map={event.event_id: (resolved_event, "m2", "test-resolution")},
+            ),
+            market_data=StaticMarketData(books),
+        )
+        await engine.initialize()
+
+        records = []
+        for cycle_index in (1, 2):
+            await engine.run_cycle()
+            snapshot = engine.cycle_snapshot()
+            snapshot["record_type"] = "cycle"
+            snapshot["schema_version"] = 3
+            snapshot["cycle_index"] = cycle_index
+            records.append(snapshot)
+
+        replay_result = await replay_cycle_records(records, settings)
+
+        assert replay_result["mismatch_count"] == 0
+        assert len(replay_result["cycles"]) == 2
+        assert all(cycle["matched"] for cycle in replay_result["cycles"])
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.anyio
+async def test_arb_engine_add_funds_includes_new_bankroll_alias():
+    settings = _settings(initial_bankroll=100.0)
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse([]),
+            market_data=StaticMarketData({}),
+        )
+        await engine.initialize()
+        result = await engine.add_funds(25.0, "top-up")
+        assert result["ok"] is True
+        assert result["new_bankroll"] == pytest.approx(result["new_equity"])
+        assert result["new_equity"] > 100.0
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.anyio
+async def test_arb_control_legacy_compat_routes():
+    settings = _settings()
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse([]),
+            market_data=StaticMarketData({}),
+        )
+        await engine.initialize()
+        control = ArbControlAPI(settings, engine, legacy_db, repository)
+        app = web.Application(middlewares=[cors_middleware, control.auth_middleware])
+        app.router.add_get("/stats", control._stats_compat)
+        app.router.add_get("/stats/assets", control._stats_assets_compat)
+        app.router.add_get("/trades", control._trades_compat)
+        app.router.add_post("/halt/asset", control._halt_asset_compat)
+        app.router.add_post("/resume/asset", control._resume_asset_compat)
+
+        async with TestClient(TestServer(app)) as client:
+            stats = await (await client.get("/stats")).json()
+            assert stats["runtime"] == "structural_arb"
+            assert stats["bankroll"] == stats["paper_bankroll"]
+
+            assets = await (await client.get("/stats/assets")).json()
+            assert set(assets.keys()) >= {"BTC", "ETH", "SOL", "XRP"}
+            assert assets["BTC"]["trades"] == 0
+
+            trades = await (await client.get("/trades")).json()
+            assert trades == []
+
+            halt_resp = await client.post("/halt/asset", json={"asset": "SOL"})
+            assert halt_resp.status == 200
+            assert engine.risk.halted
+
+            resume_resp = await client.post("/resume/asset", json={"asset": "SOL"})
+            assert resume_resp.status == 200
+            assert not engine.risk.halted
+
+            bad = await client.post("/halt/asset", json={"asset": "NOPE"})
+            assert bad.status == 400
+    finally:
+        os.unlink(path)

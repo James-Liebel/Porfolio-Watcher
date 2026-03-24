@@ -105,6 +105,8 @@ class RiskManager:
                     self._state.session_start_bankroll = deposited
                     self._state.current_bankroll = deposited
                     self._state.paper_bankroll = deposited
+                elif self._config.paper_trade:
+                    self._state.paper_bankroll = self._state.current_bankroll
                 # else: keep config.initial_bankroll (default from __init__)
 
             logger.info(
@@ -260,6 +262,8 @@ class RiskManager:
         async with self._lock:
             self._state.current_bankroll += deposit_amount
             self._state.session_start_bankroll += deposit_amount
+            if self._config.paper_trade:
+                self._state.paper_bankroll += deposit_amount
         await db.insert_deposit(amount, note)
         logger.info(
             "risk.funds_added",

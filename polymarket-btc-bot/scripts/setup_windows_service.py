@@ -27,9 +27,17 @@ def main() -> int:
             return 1
 
     python_path = Path(sys.executable).resolve()
-    main_py_path = project_root / "src" / "main.py"
-
-    _run([str(nssm_path), "install", "polymarket-bot", str(python_path), str(main_py_path)])
+    # Match docs: `python -m src` from project root (not `python path\to\main.py`).
+    _run(
+        [
+            str(nssm_path),
+            "install",
+            "polymarket-bot",
+            str(python_path),
+            "-m",
+            "src",
+        ]
+    )
     _run([str(nssm_path), "set", "polymarket-bot", "AppDirectory", str(project_root)])
     _run([str(nssm_path), "set", "polymarket-bot", "AppStdout", str(logs_path / "bot.log")])
     _run([str(nssm_path), "set", "polymarket-bot", "AppStderr", str(logs_path / "bot_error.log")])

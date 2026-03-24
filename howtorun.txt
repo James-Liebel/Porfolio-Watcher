@@ -1,1 +1,16 @@
-cd c:\Users\james\Porfolio-Watcher\polymarket-btc-bot; if (!(Test-Path .venv)) { python -m venv .venv }; Set-ExecutionPolicy -Scope Process Bypass; .\.venv\Scripts\Activate.ps1; pip install -r requirements.txt; if (!(Test-Path .env)) { Copy-Item .env.example .env }; Start-Process .\frontend\index.html; python -m src.main
+# Quick local start (PowerShell) — replace paths with your clone location.
+# Run from the directory that contains this repo's `polymarket-btc-bot` folder,
+# or cd into `polymarket-btc-bot` first and drop the leading path below.
+
+cd <path-to-clone>\polymarket-btc-bot
+if (!(Test-Path .venv)) { python -m venv .venv }
+Set-ExecutionPolicy -Scope Process Bypass
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+# Edit .env with your keys — never commit .env
+
+# Optional: open the static dashboard (file://) — API must be running on 127.0.0.1
+# Start-Process .\frontend\index.html
+
+python -m src

@@ -1,4 +1,9 @@
-"""Tiny aiohttp REST API on localhost for the frontend dashboard and external control."""
+"""Legacy directional-trading control API (aiohttp).
+
+Not mounted by `src.main` / `python -m src`. The active runtime uses
+`src.arb.control.ArbControlAPI` instead. This module remains for unit tests
+and reference; do not assume it matches the live structural-arb contract.
+"""
 from __future__ import annotations
 
 import asyncio

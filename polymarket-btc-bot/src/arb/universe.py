@@ -211,6 +211,9 @@ class GammaUniverseService:
             status = str(meta.get("status") or rows[0].get("status") or "active").lower()
             if status in {"resolved", "closed", "finalized"}:
                 continue
+            category_str = str(meta.get("category") or rows[0].get("category") or "")
+            if not self._config.category_is_allowed(category_str):
+                continue
 
             results.append(
                 ArbEvent(
@@ -339,6 +342,24 @@ class GammaUniverseService:
                     candidates.append(market_id)
             if len(candidates) == 1:
                 return candidates[0], "resolved_price:1.0"
+            if len(candidates) > 1:
+                # Multiple markets near 1.0 - pick the one with the highest price.
+                best_market_id = None
+                best_price = -1.0
+                for row in market_rows:
+                    market_id = str(row.get("id") or row.get("marketId") or row.get("conditionId") or "")
+                    if market_id not in candidates:
+                        continue
+                    p = max(
+                        _as_float(row.get("finalYesPrice"), default=-1.0),
+                        _as_float(row.get("yesPrice"), default=-1.0),
+                        _as_float(row.get("lastTradePrice"), default=-1.0),
+                    )
+                    if p > best_price:
+                        best_price = p
+                        best_market_id = market_id
+                if best_market_id:
+                    return best_market_id, "resolved_price:highest"
 
         return None, "unresolved"
 

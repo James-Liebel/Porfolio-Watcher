@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     max_total_open_baskets: int = Field(
         default=4, alias="MAX_TOTAL_OPEN_BASKETS"
     )
+    max_baskets_per_strategy: int = Field(
+        default=2, alias="MAX_BASKETS_PER_STRATEGY"
+    )
     max_opportunities_per_cycle: int = Field(
         default=3, alias="MAX_OPPORTUNITIES_PER_CYCLE"
     )
@@ -113,10 +116,21 @@ class Settings(BaseSettings):
     paper_maker_rebate_bps: float = Field(
         default=0.0, alias="PAPER_MAKER_REBATE_BPS"
     )
+    paper_spread_penalty_bps: float = Field(
+        default=0.0,
+        alias="PAPER_SPREAD_PENALTY_BPS",
+        description=(
+            "Extra cost per fill (bps of notional) added in paper mode to model "
+            "bid/ask spread not captured by single-level synthetic books. "
+            "Set to 10-20 for more conservative paper results."
+        ),
+    )
     auto_settle_resolved_events: bool = Field(
         default=True, alias="AUTO_SETTLE_RESOLVED_EVENTS"
     )
     replay_output_dir: str = Field(default="data/replays", alias="REPLAY_OUTPUT_DIR")
+    category_allowlist: str = Field(default="", alias="CATEGORY_ALLOWLIST")
+    category_blocklist: str = Field(default="", alias="CATEGORY_BLOCKLIST")
 
     # ── Control API ─────────────────────────────────────────────────────
     control_api_port: int = Field(default=8765, alias="CONTROL_API_PORT")
@@ -157,6 +171,17 @@ class Settings(BaseSettings):
     # ── Multi-asset risk ─────────────────────────────────────────────────
     max_positions_per_asset: int = Field(default=1, alias="MAX_POSITIONS_PER_ASSET")
     max_total_exposure_pct: float = Field(default=0.40, alias="MAX_TOTAL_EXPOSURE_PCT")
+
+    def category_is_allowed(self, category: str) -> bool:
+        """Return True if category passes allowlist/blocklist filters."""
+        cat = (category or "").strip().lower()
+        blocklist = [s.strip().lower() for s in self.category_blocklist.split(",") if s.strip()]
+        if any(blocked in cat for blocked in blocklist):
+            return False
+        allowlist = [s.strip().lower() for s in self.category_allowlist.split(",") if s.strip()]
+        if allowlist and not any(allowed in cat for allowed in allowlist):
+            return False
+        return True
 
     def manual_asset_flags(self) -> dict[str, bool]:
         return {

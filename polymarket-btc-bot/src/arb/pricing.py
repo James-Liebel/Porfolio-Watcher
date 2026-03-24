@@ -1,9 +1,42 @@
 from __future__ import annotations
 
+import math
+from datetime import datetime, timezone
+
 from ..config import Settings
 from .book_matching import filled_size, walk_taker_levels
 from .fees import taker_fee_on_notional
 from .models import ArbEvent, ArbOpportunity, OpportunityLeg, TokenBook
+
+
+def _seconds_to_expiry(end_time_str: str) -> float | None:
+    """Return seconds until end_time, or None if unparseable / already past."""
+    if not end_time_str:
+        return None
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S+00:00",
+        "%Y-%m-%dT%H:%M:%S.%fZ",
+        "%Y-%m-%d",
+    ):
+        try:
+            dt = datetime.strptime(end_time_str, fmt).replace(tzinfo=timezone.utc)
+            secs = (dt - datetime.now(timezone.utc)).total_seconds()
+            return secs if secs > 0 else None
+        except ValueError:
+            continue
+    return None
+
+
+def _annualized_edge_bps(net_edge_bps: float, seconds_to_expiry: float | None) -> float:
+    """Annualize edge over seconds_to_expiry, falling back when expiry is unknown."""
+    if not math.isfinite(net_edge_bps):
+        return 0.0
+    if not seconds_to_expiry or seconds_to_expiry <= 0:
+        return net_edge_bps
+    annual_seconds = 365.25 * 24 * 3600
+    annualized = net_edge_bps * (annual_seconds / seconds_to_expiry)
+    return min(annualized, 1_000_000.0)
 
 
 def _edge_bps(profit: float, capital: float) -> float:
@@ -150,7 +183,13 @@ class OpportunityScanner:
             opportunities.extend(self._complete_set_opportunities(event, books))
             opportunities.extend(self._neg_risk_opportunities(event, books))
 
-        opportunities.sort(key=lambda opp: (opp.net_edge_bps, opp.expected_profit), reverse=True)
+        opportunities.sort(
+            key=lambda opp: (
+                _annualized_edge_bps(opp.net_edge_bps, opp.seconds_to_expiry),
+                opp.expected_profit,
+            ),
+            reverse=True,
+        )
         return opportunities[: self._config.max_opportunities_per_cycle * 10]
 
     def _complete_set_opportunities(self, event: ArbEvent, books: dict[str, TokenBook]) -> list[ArbOpportunity]:
@@ -162,13 +201,12 @@ class OpportunityScanner:
 
         legs_spec: list[tuple[TokenBook, float, bool]] = []
         yes_templates: list[tuple[float, OpportunityLeg, TokenBook]] = []
-        naive_unit = 0.0
+        seconds_to_expiry = _seconds_to_expiry(event.end_time)
 
         for market in event.markets:
             book = books.get(market.yes_token_id)
             if book is None or book.best_ask <= 0:
                 return []
-            naive_unit += book.best_ask
             legs_spec.append((book, book.best_ask, market.fees_enabled))
             yes_templates.append(
                 (
@@ -216,7 +254,7 @@ class OpportunityScanner:
                 strategy_type="complete_set",
                 event_id=event.event_id,
                 event_title=event.title,
-                gross_edge_bps=_edge_bps(1.0 - naive_unit, naive_unit),
+                gross_edge_bps=_edge_bps(size - cash_out, cash_out),
                 net_edge_bps=net_edge_bps,
                 capital_required=cash_out,
                 expected_profit=profit,
@@ -228,6 +266,7 @@ class OpportunityScanner:
                 requires_conversion=False,
                 settle_on_resolution=True,
                 cooldown_key=f"complete_set:{event.event_id}",
+                seconds_to_expiry=seconds_to_expiry,
             )
         ]
 
@@ -240,6 +279,7 @@ class OpportunityScanner:
             return []
 
         opportunities: list[ArbOpportunity] = []
+        seconds_to_expiry = _seconds_to_expiry(event.end_time)
         for source_market in event.markets:
             no_book = books.get(source_market.no_token_id)
             if no_book is None or no_book.best_ask <= 0:
@@ -275,7 +315,6 @@ class OpportunityScanner:
             if not sell_legs:
                 continue
 
-            naive_sale = sum(p for p, _, _ in sell_legs)
             size, buy_cost, sell_in, profit = _max_size_neg_risk_under_notional(
                 no_book,
                 no_book.best_ask,
@@ -319,7 +358,7 @@ class OpportunityScanner:
                     strategy_type="neg_risk_conversion",
                     event_id=event.event_id,
                     event_title=event.title,
-                    gross_edge_bps=_edge_bps(naive_sale - no_book.best_ask, no_book.best_ask),
+                    gross_edge_bps=_edge_bps(sell_in - buy_cost, buy_cost),
                     net_edge_bps=net_edge_bps,
                     capital_required=buy_cost,
                     expected_profit=profit,
@@ -333,6 +372,7 @@ class OpportunityScanner:
                     convert_from_market_id=source_market.market_id,
                     convert_to_market_ids=[leg.market_id for leg in sell_legs_sized],
                     cooldown_key=f"neg_risk:{event.event_id}:{source_market.market_id}",
+                    seconds_to_expiry=seconds_to_expiry,
                 )
             )
         return opportunities

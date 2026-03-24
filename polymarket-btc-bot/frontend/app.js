@@ -117,13 +117,14 @@ function renderBasketsTable(rows) {
   const tbody = document.getElementById("baskets-body");
   if (!tbody) return;
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="empty-state">No baskets yet.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="empty-state">No baskets yet.</td></tr>`;
     return;
   }
   tbody.innerHTML = rows
     .map((b) => {
       const pnl = b.realized_net_pnl != null ? formatPnL(Number(b.realized_net_pnl)) : "—";
       const pnlCls = b.realized_net_pnl != null ? pnlClass(Number(b.realized_net_pnl)) : "val-neutral";
+      const slippage = b.fill_slippage_bps != null ? formatNum(b.fill_slippage_bps, 2) : "—";
       return `<tr>
         <td>${formatTime(b.created_at)}</td>
         <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;" title="${escHtml(
@@ -132,6 +133,7 @@ function renderBasketsTable(rows) {
         <td>${escHtml(b.status || "—")}</td>
         <td>${formatUSD(b.capital_reserved)}</td>
         <td class="${pnlCls}">${pnl}</td>
+        <td>${slippage}</td>
         <td style="font-size:0.85rem;color:var(--text-secondary)">${escHtml(String(b.id || b.basket_id || "").slice(0, 14))}</td>
       </tr>`;
     })

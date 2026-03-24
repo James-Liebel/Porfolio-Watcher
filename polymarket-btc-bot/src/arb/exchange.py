@@ -16,6 +16,7 @@ class PaperExchange:
     def __init__(self, config: Settings) -> None:
         self._config = config
         self._books: dict[str, TokenBook] = {}
+        self._book_timestamps: dict[str, datetime] = {}
         self._orders: dict[str, OrderRecord] = {}
         self._open_orders: set[str] = set()
         self._positions: dict[str, PositionRecord] = {}
@@ -39,6 +40,7 @@ class PaperExchange:
         self._positions.clear()
         self._reserved_cash.clear()
         self._reserved_sell_size.clear()
+        self._book_timestamps.clear()
 
     def add_funds(self, amount: float) -> None:
         self.cash += float(amount)
@@ -89,6 +91,9 @@ class PaperExchange:
 
     def sync_books(self, books: dict[str, TokenBook]) -> None:
         self._books = {token_id: deepcopy(book) for token_id, book in books.items()}
+        now = datetime.now(timezone.utc)
+        for token_id in books:
+            self._book_timestamps[token_id] = now
         self._process_resting_orders()
 
     @property
@@ -378,10 +383,43 @@ class PaperExchange:
 
     def _apply_fill(self, order: OrderRecord, fill: FillRecord) -> None:
         notional = fill.price * fill.size
+        # Log slippage when fill deviates from the order's limit price.
+        if order.price > 0:
+            slippage_bps = abs(fill.price - order.price) / order.price * 10000.0
+            if slippage_bps > 2.0:
+                import structlog as _sl
+
+                _sl.get_logger(__name__).warning(
+                    "paper_exchange.slippage",
+                    order_id=order.order_id,
+                    token_id=order.token_id,
+                    side=order.side,
+                    expected_price=round(order.price, 6),
+                    fill_price=round(fill.price, 6),
+                    slippage_bps=round(slippage_bps, 2),
+                )
+
+        book_ts = self._book_timestamps.get(order.token_id)
+        if book_ts is not None:
+            age_seconds = (datetime.now(timezone.utc) - book_ts).total_seconds()
+            if age_seconds > 30:
+                import structlog as _sl
+
+                _sl.get_logger(__name__).warning(
+                    "paper_exchange.stale_book_fill",
+                    token_id=order.token_id,
+                    book_age_seconds=round(age_seconds, 1),
+                )
+
         if order.fees_enabled and order.maker_or_taker == "taker":
             fee_paid = taker_fee_on_notional(notional, True, self._config.paper_taker_fee_bps)
         else:
             fee_paid = 0.0
+        spread_cost = 0.0
+        if self._config.paper_spread_penalty_bps > 0 and order.side == "BUY":
+            spread_cost = (fill.price * fill.size) * (self._config.paper_spread_penalty_bps / 10000.0)
+            self.fees_paid += spread_cost
+            self.realized_pnl -= spread_cost
         if order.fees_enabled and order.maker_or_taker == "maker":
             rebate = maker_rebate_on_notional(notional, True, self._config.paper_maker_rebate_bps)
         else:
@@ -393,7 +431,7 @@ class PaperExchange:
         self.realized_pnl += rebate - fee_paid
 
         if order.side == "BUY":
-            self.cash -= notional + fee_paid
+            self.cash -= notional + fee_paid + spread_cost
             self.cash += rebate
             meta = self._token_meta[order.token_id]
             self._merge_position(
@@ -510,4 +548,7 @@ class PaperExchange:
         if side != "BUY":
             return 0.0
         fee = taker_fee_on_notional(notional, fees_enabled and maker_or_taker == "taker", self._config.paper_taker_fee_bps)
-        return notional + fee
+        spread_cost = 0.0
+        if self._config.paper_spread_penalty_bps > 0:
+            spread_cost = notional * (self._config.paper_spread_penalty_bps / 10000.0)
+        return notional + fee + spread_cost

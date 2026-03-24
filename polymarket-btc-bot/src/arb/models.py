@@ -175,6 +175,7 @@ class ArbOpportunity:
     decision: str = "detected"
     reason: str = ""
     cooldown_key: str = ""
+    seconds_to_expiry: float | None = None
     created_at: datetime = field(default_factory=utc_now)
     opportunity_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
@@ -196,6 +197,7 @@ class ArbOpportunity:
             "decision": self.decision,
             "reason": self.reason,
             "cooldown_key": self.cooldown_key,
+            "seconds_to_expiry": self.seconds_to_expiry,
             "created_at": _iso(self.created_at),
             "legs": [leg.as_dict() for leg in self.legs],
         }
@@ -326,6 +328,7 @@ class BasketRecord:
     capital_reserved: float
     target_net_edge_bps: float
     realized_net_pnl: float = 0.0
+    fill_slippage_bps: float = 0.0
     notes: str = ""
     created_at: datetime = field(default_factory=utc_now)
     closed_at: datetime | None = None
@@ -340,6 +343,7 @@ class BasketRecord:
             "capital_reserved": self.capital_reserved,
             "target_net_edge_bps": self.target_net_edge_bps,
             "realized_net_pnl": self.realized_net_pnl,
+            "fill_slippage_bps": self.fill_slippage_bps,
             "notes": self.notes,
             "created_at": _iso(self.created_at),
             "closed_at": _iso(self.closed_at),

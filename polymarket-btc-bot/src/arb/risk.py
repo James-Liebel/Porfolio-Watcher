@@ -22,7 +22,13 @@ class ArbRiskManager:
         starting_cash = float(deposits) if deposits > 0 else float(self._config.initial_bankroll)
         exchange.set_starting_cash(starting_cash)
 
-    def approve(self, opportunity: ArbOpportunity, exchange, open_baskets: int) -> tuple[bool, str]:
+    def approve(
+        self,
+        opportunity: ArbOpportunity,
+        exchange,
+        open_baskets: int,
+        open_baskets_by_strategy: dict[str, int] | None = None,
+    ) -> tuple[bool, str]:
         now = datetime.now(timezone.utc)
         self._enforce_drawdown(exchange)
         if self.halted:
@@ -45,6 +51,13 @@ class ArbRiskManager:
             self.rejected_count += 1
             self.last_decision_reason = "too many open baskets"
             return False, self.last_decision_reason
+
+        if open_baskets_by_strategy is not None:
+            strategy_count = open_baskets_by_strategy.get(opportunity.strategy_type, 0)
+            if strategy_count >= self._config.max_baskets_per_strategy:
+                self.rejected_count += 1
+                self.last_decision_reason = f"strategy basket cap reached ({opportunity.strategy_type})"
+                return False, self.last_decision_reason
 
         if exchange.available_cash < opportunity.capital_required:
             self.rejected_count += 1

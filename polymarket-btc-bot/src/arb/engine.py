@@ -91,6 +91,7 @@ class ArbEngine:
                 basket.basket_id: basket
                 for basket in await self._repository.load_active_baskets()
             }
+        self._risk.cooldowns = await self._repository.load_cooldowns()
         await self._repository.replace_positions(self._exchange.get_positions())
         await self._persist_runtime_state()
         self._initialized = True
@@ -134,6 +135,12 @@ class ArbEngine:
                 await self._repository.upsert_event(event)
 
             books = await self._market_data.refresh(events)
+            # Strip synthetic books before scanning so false edges are never scored.
+            real_books = {
+                token_id: book
+                for token_id, book in books.items()
+                if book.source != "synthetic"
+            }
             self._last_books = dict(books)
             bsrc = _book_source_counts(books)
             if bsrc["books_synthetic"] > 0:
@@ -149,13 +156,18 @@ class ArbEngine:
                 await self._repository.record_book(book)
 
             auto_settled = await self._auto_settle_resolved_events_locked()
-            opportunities = self._scanner.scan(events, books)
+            opportunities = self._scanner.scan(events, real_books)
             self._opportunities = opportunities
             executed = 0
 
             for opportunity in opportunities:
                 open_baskets = self._open_basket_count()
-                approved, reason = self._risk.approve(opportunity, self._exchange, open_baskets)
+                approved, reason = self._risk.approve(
+                    opportunity,
+                    self._exchange,
+                    open_baskets,
+                    open_baskets_by_strategy=self._open_basket_count_by_strategy(),
+                )
                 await self._repository.record_opportunity(
                     opportunity,
                     decision="approved" if approved else "rejected",
@@ -229,6 +241,18 @@ class ArbEngine:
                     if order.status != "filled" or order.filled_size + 1e-12 < leg.size:
                         raise RuntimeError(f"failed to fill complete-set leg {leg.token_id}")
                 basket.status = "OPEN"
+
+            total_slippage_bps = 0.0
+            leg_count = 0
+            for order in self._exchange._orders.values():
+                if order.basket_id != basket.basket_id or order.status != "filled" or order.average_price <= 0:
+                    continue
+                intended = next((leg.price for leg in opportunity.legs if leg.token_id == order.token_id), None)
+                if intended and intended > 0:
+                    total_slippage_bps += abs(order.average_price - intended) / intended * 10000.0
+                    leg_count += 1
+            if leg_count > 0:
+                basket.fill_slippage_bps = total_slippage_bps / leg_count
 
             basket.realized_net_pnl = self._exchange.realized_pnl - starting_realized
             await self._repository.update_basket(basket)
@@ -417,6 +441,13 @@ class ArbEngine:
     def _open_basket_count(self) -> int:
         return sum(1 for basket in self._baskets.values() if basket.status in {"OPEN", "EXECUTING"})
 
+    def _open_basket_count_by_strategy(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for basket in self._baskets.values():
+            if basket.status in {"OPEN", "EXECUTING"}:
+                counts[basket.strategy_type] = counts.get(basket.strategy_type, 0) + 1
+        return counts
+
     def cycle_snapshot(self) -> dict[str, Any]:
         return {
             "timestamp": utc_now().isoformat(),
@@ -441,6 +472,7 @@ class ArbEngine:
             rebates_earned=snapshot["rebates_earned"],
             updated_at=utc_now().isoformat(),
         )
+        await self._repository.save_cooldowns(self._risk.cooldowns)
 
     async def _auto_settle_resolved_events_locked(self) -> int:
         if not self._config.auto_settle_resolved_events:

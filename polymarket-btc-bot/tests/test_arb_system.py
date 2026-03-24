@@ -92,6 +92,12 @@ def event_time():
     return datetime.now(timezone.utc)
 
 
+def _set_book_source(books: dict[str, TokenBook], source: str) -> dict[str, TokenBook]:
+    for book in books.values():
+        book.source = source
+    return books
+
+
 class StaticUniverse:
     def __init__(self, events=None, refresh_sequence=None, resolution_map=None):
         self._events = events or []
@@ -142,6 +148,8 @@ async def test_run_cycle_includes_book_source_counts():
         assert summary["books_clob"] == 0
         assert summary["books_synthetic"] == len(books)
         assert summary["books_other"] == 0
+        assert summary["opportunities"] == 0
+        assert summary["executed"] == 0
     finally:
         os.unlink(path)
 
@@ -288,6 +296,7 @@ def test_neg_risk_scanner_skips_augmented_and_other_outcomes():
 @pytest.mark.anyio
 async def test_engine_executes_complete_set_and_settles():
     event, books = _complete_set_event()
+    _set_book_source(books, "clob")
     settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
@@ -317,6 +326,7 @@ async def test_engine_executes_complete_set_and_settles():
 @pytest.mark.anyio
 async def test_engine_auto_settles_when_event_leaves_active_universe():
     event, books = _complete_set_event()
+    _set_book_source(books, "clob")
     settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
     resolved_event = ArbEvent(
         event_id=event.event_id,
@@ -357,6 +367,7 @@ async def test_engine_auto_settles_when_event_leaves_active_universe():
 @pytest.mark.anyio
 async def test_engine_rejects_invalid_settlement_market():
     event, books = _complete_set_event()
+    _set_book_source(books, "clob")
     settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
@@ -383,6 +394,7 @@ async def test_engine_rejects_invalid_settlement_market():
 @pytest.mark.anyio
 async def test_engine_restores_runtime_state_after_restart():
     event, books = _complete_set_event()
+    _set_book_source(books, "clob")
     settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
 
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
@@ -453,6 +465,7 @@ async def test_control_api_requires_token_when_configured():
 @pytest.mark.anyio
 async def test_full_engine_replay_reproduces_recorded_cycles():
     event, books = _complete_set_event()
+    _set_book_source(books, "clob")
     settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
     resolved_event = ArbEvent(
         event_id=event.event_id,

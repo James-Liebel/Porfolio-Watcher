@@ -29,6 +29,10 @@ Replay canonicalization includes these fields (default **0** for older JSONL ses
 - **No latency, partial API failures, or queue priority** — FOK-style immediate match against a snapshot only.
 - **Settlement** remains a simplified $1/share binary payout model; verify against Polymarket rules for edge cases.
 - **Neg-risk conversion** in the exchange uses a simplified inventory split; scanner profit is cash-flow based (buy NO + sell YES legs) and should be close for the executed sequence but may not match every on-chain detail.
+- **Book staleness warnings** — `paper_exchange.stale_book_fill` is logged when a fill simulates against a book snapshot older than 30 s. This approximates the latency risk of the 20 s polling cycle; real fills in live mode hit a book that may have moved since the last refresh.
+- **`PAPER_SPREAD_PENALTY_BPS`** — optional extra cost added to every buy fill to model bid/ask spread not captured by single-level synthetic books. Recommended: set to 10-20 before going live to stress-test expected edge.
+- **Cooldown persistence** — cooldowns now survive restarts via `arb_cooldowns` SQLite table; expired entries are pruned on load.
+- **Synthetic book filtering** — books with `source=="synthetic"` are now excluded from scanner input. They are still recorded in the DB and displayed in the dashboard.
 
 ## Files touched for this pass
 

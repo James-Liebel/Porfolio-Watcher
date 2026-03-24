@@ -190,6 +190,13 @@ CREATE TABLE IF NOT EXISTS arb_runtime_state (
 );
 """
 
+_CREATE_COOLDOWNS = """
+CREATE TABLE IF NOT EXISTS arb_cooldowns (
+    cooldown_key TEXT PRIMARY KEY,
+    expires_at   TEXT NOT NULL
+);
+"""
+
 
 class ArbRepository:
     def __init__(self, path: str = _DB_PATH) -> None:
@@ -210,6 +217,7 @@ class ArbRepository:
                 _CREATE_CONVERSIONS,
                 _CREATE_SETTLEMENTS,
                 _CREATE_RUNTIME_STATE,
+                _CREATE_COOLDOWNS,
             ):
                 await db.execute(sql)
             await db.commit()
@@ -588,6 +596,35 @@ class ArbRepository:
         )
         return rows[0] if rows else None
 
+    async def save_cooldowns(self, cooldowns: dict[str, datetime]) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute("DELETE FROM arb_cooldowns")
+            for key, expires_at in cooldowns.items():
+                await db.execute(
+                    "INSERT INTO arb_cooldowns (cooldown_key, expires_at) VALUES (?, ?)",
+                    (key, expires_at.isoformat()),
+                )
+            await db.commit()
+
+    async def load_cooldowns(self) -> dict[str, datetime]:
+        from datetime import datetime, timezone
+
+        rows = await self._fetch_all(
+            "SELECT cooldown_key, expires_at FROM arb_cooldowns"
+        )
+        now = datetime.now(timezone.utc)
+        result: dict[str, datetime] = {}
+        for row in rows:
+            try:
+                dt = datetime.fromisoformat(row["expires_at"])
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt > now:
+                    result[row["cooldown_key"]] = dt
+            except Exception:
+                pass
+        return result
+
     async def _fetch_all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         async with aiosqlite.connect(self._path) as db:
             db.row_factory = aiosqlite.Row
@@ -608,7 +645,22 @@ class ArbRepository:
         return await self._fetch_all("SELECT * FROM arb_positions ORDER BY event_id, market_id")
 
     async def list_baskets(self, limit: int = 100) -> list[dict[str, Any]]:
-        return await self._fetch_all("SELECT * FROM arb_baskets ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = await self._fetch_all("SELECT * FROM arb_baskets ORDER BY created_at DESC LIMIT ?", (limit,))
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            payload_raw = row.get("payload_json")
+            if not payload_raw:
+                result.append(row)
+                continue
+            try:
+                payload = json.loads(payload_raw)
+            except (TypeError, json.JSONDecodeError):
+                result.append(row)
+                continue
+            merged = dict(row)
+            merged.update(payload if isinstance(payload, dict) else {})
+            result.append(merged)
+        return result
 
     async def load_active_baskets(self) -> list[BasketRecord]:
         rows = await self._fetch_all(
@@ -627,6 +679,7 @@ class ArbRepository:
                     capital_reserved=float(payload["capital_reserved"]),
                     target_net_edge_bps=float(payload["target_net_edge_bps"]),
                     realized_net_pnl=float(payload.get("realized_net_pnl", 0.0)),
+                    fill_slippage_bps=float(payload.get("fill_slippage_bps", 0.0)),
                     notes=payload.get("notes", ""),
                     created_at=datetime.fromisoformat(payload["created_at"]),
                     closed_at=datetime.fromisoformat(payload["closed_at"]) if payload.get("closed_at") else None,

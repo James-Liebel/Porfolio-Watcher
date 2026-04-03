@@ -47,6 +47,9 @@ Primary modules:
 Implementation blueprint:
 - `NEG_RISK_ARB_BLUEPRINT.md`
 
+Current runtime behavior, paper-vs-market alignment, and tuning/extension hooks:
+- `ARB_RUNTIME_LOGIC.md`
+
 ## Quick Start (first-time setup)
 
 From the `polymarket-btc-bot` directory:

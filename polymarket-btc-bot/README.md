@@ -136,6 +136,8 @@ Default port: `8765`
 Optional auth:
 - Set `CONTROL_API_TOKEN` to require `X-Control-Token: <token>` or `Authorization: Bearer <token>` on all routes except `/health`.
 
+**Dashboard:** `http://127.0.0.1:<CONTROL_API_PORT>/ui/index.html` shows **one** bot (the process you connected to). For **two** separate traders (different ports + SQLite files), use `python scripts/run_two_structural_agents.py` and open `http://127.0.0.1:8765/ui/agents-split.html`, or add query params `?left=<port>&right=<port>` if your ports differ.
+
 Useful endpoints:
 - `GET /health`
 - `GET /summary` (includes `last_cycle.books_clob` / `books_synthetic` / `books_other` for data-quality checks)

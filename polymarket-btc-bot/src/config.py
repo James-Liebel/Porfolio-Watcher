@@ -113,7 +113,12 @@ class Settings(BaseSettings):
         default=40.0, alias="MIN_NEG_RISK_EDGE_BPS"
     )
     max_event_exposure_pct: float = Field(
-        default=0.10, alias="MAX_EVENT_EXPOSURE_PCT"
+        default=0.22,
+        alias="MAX_EVENT_EXPOSURE_PCT",
+        description=(
+            "Max fraction of max(equity, contributed_capital) deployable in one event "
+            "(positions + reserved). Must be ≥ MAX_BASKET_NOTIONAL / bankroll for typical baskets."
+        ),
     )
     max_basket_notional: float = Field(default=50.0, alias="MAX_BASKET_NOTIONAL")
     max_total_open_baskets: int = Field(
@@ -128,6 +133,36 @@ class Settings(BaseSettings):
     opportunity_cooldown_seconds: int = Field(
         default=300, alias="OPPORTUNITY_COOLDOWN_SECONDS"
     )
+    # 0 = disabled. Max (ask−bid)/mid in bps for each CLOB leg in a structural basket; skips wide/fragile books.
+    max_arb_leg_spread_bps: float = Field(
+        default=750.0,
+        alias="MAX_ARB_LEG_SPREAD_BPS",
+    )
+    # 0 = disabled. Drop opportunities with expected_profit below this (after fees in the scanner).
+    arb_min_expected_profit_usd: float = Field(
+        default=0.25,
+        alias="ARB_MIN_EXPECTED_PROFIT_USD",
+    )
+    # 0 = disabled. If a cycle has this many synthetic books, skip new executions (opportunities still logged as rejected).
+    arb_halt_execution_if_synthetic_books_ge: int = Field(
+        default=6,
+        alias="ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE",
+    )
+    # 0 = disabled. Halt if equity falls this fraction below the session peak (mark-to-market). Cleared on resume.
+    arb_trailing_equity_drawdown_pct: float = Field(
+        default=0.0,
+        alias="ARB_TRAILING_EQUITY_DRAWDOWN_PCT",
+    )
+    # 0 = disabled. Halt if realized PnL vs process start drops by more than this (session = since first init).
+    arb_session_realized_loss_usd: float = Field(
+        default=0.0,
+        alias="ARB_SESSION_REALIZED_LOSS_USD",
+    )
+    # 0 = disabled. Halt after this many failed basket executions in a row (partial fills / unwind paths).
+    arb_consecutive_execution_failures_halt: int = Field(
+        default=3,
+        alias="ARB_CONSECUTIVE_EXECUTION_FAILURES_HALT",
+    )
     allow_taker_execution: bool = Field(
         default=True, alias="ALLOW_TAKER_EXECUTION"
     )
@@ -140,12 +175,11 @@ class Settings(BaseSettings):
         default=0.0, alias="PAPER_MAKER_REBATE_BPS"
     )
     paper_spread_penalty_bps: float = Field(
-        default=0.0,
+        default=15.0,
         alias="PAPER_SPREAD_PENALTY_BPS",
         description=(
-            "Extra cost per fill (bps of notional) added in paper mode to model "
-            "bid/ask spread not captured by single-level synthetic books. "
-            "Set to 10-20 for more conservative paper results."
+            "Extra cost per BUY fill (bps of notional) in paper mode — same in scanner and PaperExchange. "
+            "Models residual spread / impact vs the CLOB snapshot; use 0 only for fee-only stress tests."
         ),
     )
     auto_settle_resolved_events: bool = Field(
@@ -244,6 +278,16 @@ class Settings(BaseSettings):
 
     # ── Paper trade mode ────────────────────────────────────────────────
     paper_trade: bool = Field(default=True, alias="PAPER_TRADE")
+    paper_equity_snapshot_log: bool = Field(
+        default=True,
+        alias="PAPER_EQUITY_SNAPSHOT_LOG",
+        description="When true and PAPER_TRADE, append one JSON line per arb cycle for offline tracking.",
+    )
+    paper_equity_log_path: str = Field(
+        default="data/paper_tracking/equity.jsonl",
+        alias="PAPER_EQUITY_LOG_PATH",
+        description="Append-only JSONL of cycle snapshots; set empty to disable writes.",
+    )
 
     # ── Portfolio profile ───────────────────────────────────────────────
     strategy_profile: str = Field(default="conservative", alias="STRATEGY_PROFILE")

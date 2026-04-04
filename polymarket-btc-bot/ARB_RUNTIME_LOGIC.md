@@ -27,6 +27,7 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 
 - **Same public inputs as a live watcher:** Universe and (when the client works) books come from the **same Gamma and CLOB endpoints** you would use for real trading. `PAPER_TRADE` does **not** switch off these feeds; it only labels mode and affects other code paths that expect live keys.
 - **Scanner and paper fills use one book snapshot per cycle:** Opportunities are sized with `walk_taker_levels` / best asks; `PaperExchange` applies fills against the books synced that cycle, so simulated execution is **tied to the same prices and depth** the scanner saw (modulo fee/slippage modeling below).
+- **Same BUY cash model:** `PAPER_TAKER_FEE_BPS` and **`PAPER_SPREAD_PENALTY_BPS`** apply in both `OpportunityScanner` (expected `capital_required` / profit) and `PaperExchange` (fills), so paper PnL is not systematically more optimistic than the scanner.
 
 **What is not identical to live**
 
@@ -105,7 +106,11 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 
 ## 6. Risk and execution (after scan)
 
-**`ArbRiskManager.approve`** — rejects if: halted, `ALLOW_TAKER_EXECUTION=false`, basket notional over cap, too many open baskets / per-strategy baskets, insufficient cash, **event exposure** over `MAX_EVENT_EXPOSURE_PCT` of equity, or **cooldown** active (`OPPORTUNITY_COOLDOWN_SECONDS`).
+**`ArbRiskManager.approve`** — rejects if: halted, **per-cycle synthetic book gate** (when `ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE` > 0 and the cycle’s synthetic book count ≥ threshold — skips new executions while CLOB coverage is bad), `ALLOW_TAKER_EXECUTION=false`, basket notional over cap, too many open baskets / per-strategy baskets, insufficient cash, **event exposure** over `MAX_EVENT_EXPOSURE_PCT` × max(contributed capital, equity), or **cooldown** active (`OPPORTUNITY_COOLDOWN_SECONDS`). For paper runs with `MAX_BASKET_NOTIONAL` near bankroll size, keep **`MAX_EVENT_EXPOSURE_PCT` ≥ notional / bankroll** or baskets will be rejected as “event exposure cap breached.”
+
+**Stops (minimize losses)** — `DAILY_LOSS_CAP` still halts on drawdown vs **contributed capital** (same as before). Additionally: **`ARB_TRAILING_EQUITY_DRAWDOWN_PCT`** (optional) halts when **mark-to-market equity** falls that fraction below the **session peak**; **`ARB_SESSION_REALIZED_LOSS_USD`** halts when **realized PnL** vs the level at first engine init drops by more than that amount; **`ARB_CONSECUTIVE_EXECUTION_FAILURES_HALT`** halts after N failed basket executions in a row. **Resume** clears trailing peak (re-anchors), consecutive failure count, and halt flags except you must still fix the underlying issue.
+
+**Scanner quality / profitability** — Opportunities are ranked by **annualized edge**, then **expected profit per dollar of capital**, then **expected profit**. **`MAX_ARB_LEG_SPREAD_BPS`** (0 = off) drops legs whose YES/NO book is too wide vs mid. **`ARB_MIN_EXPECTED_PROFIT_USD`** (0 = off) drops tiny expected-profit arbs after fees.
 
 **Execution** — Up to **`MAX_OPPORTUNITIES_PER_CYCLE`** approved opportunities executed per cycle (in scan order after sort).
 
@@ -123,7 +128,12 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 | `CATEGORY_ALLOWLIST` / `CATEGORY_BLOCKLIST` | Category gating |
 | `MIN_COMPLETE_SET_EDGE_BPS` / `MIN_NEG_RISK_EDGE_BPS` | Scanner floors |
 | `MAX_BASKET_NOTIONAL`, `MAX_TOTAL_OPEN_BASKETS`, `MAX_BASKETS_PER_STRATEGY`, `MAX_OPPORTUNITIES_PER_CYCLE` | Size and concurrency limits |
-| `MAX_EVENT_EXPOSURE_PCT`, `OPPORTUNITY_COOLDOWN_SECONDS` | Risk |
+| `MAX_EVENT_EXPOSURE_PCT`, `OPPORTUNITY_COOLDOWN_SECONDS` | Risk (exposure vs max(equity, contributed)) |
+| `MAX_ARB_LEG_SPREAD_BPS`, `ARB_MIN_EXPECTED_PROFIT_USD` | Skip wide books / dust arbs (0 disables each) |
+| `ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE` | Pause executions when too many synthetic books this cycle (0 = off) |
+| `ARB_TRAILING_EQUITY_DRAWDOWN_PCT`, `ARB_SESSION_REALIZED_LOSS_USD` | Optional equity trail and session realized-loss halts (0 = off) |
+| `ARB_CONSECUTIVE_EXECUTION_FAILURES_HALT` | Halt after N failed baskets in a row (0 = off) |
+| `PAPER_EQUITY_SNAPSHOT_LOG`, `PAPER_EQUITY_LOG_PATH` | Paper: append one JSON line per cycle (`summary` + `last_cycle`) |
 | `ALLOW_TAKER_EXECUTION` | Must be true for current executor path |
 | `PAPER_TAKER_FEE_BPS`, `PAPER_SPREAD_PENALTY_BPS` | Paper realism |
 | `AUTO_SETTLE_RESOLVED_EVENTS` | Auto settlement behavior |
@@ -134,6 +144,10 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 ## 8. Measurement, replay, prediction backtest, overlay
 
 **Paper arb stats (SQLite)** — `scripts/arb_session_report.py` rolls up `arb_opportunities`, `arb_fills`, `arb_settlements`, `arb_baskets`, and `arb_runtime_state` by UTC day. Use `--db` or `ARB_SQLITE_PATH` for multi-agent DB files. This answers “how many edges, fills, and settlement PnL” without a separate analytics DB.
+
+**Paper time series (JSONL)** — When `PAPER_TRADE` and `PAPER_EQUITY_SNAPSHOT_LOG` are true, each cycle appends one line to `PAPER_EQUITY_LOG_PATH` (default `data/paper_tracking/equity.jsonl`): `summary` (same shape as the control API) plus `last_cycle` diagnostics. Use for quick plots or `jq` without querying SQLite.
+
+**Dual paper traders + split UI** — `python scripts/start_paper_split.py` kills **8765/8767/8778/8780**, resets `data/arb_agent_1.db` and `data/arb_agent_2.db`, starts two `python -m src` processes, starts **`agents.advisor_app`** on **8780** with **`LLM_PROVIDER=ollama`**, tries **`ollama serve`** if port **11434** is closed, and opens the browser. Split page: **`GET /split`** on agent A (redirects to `/ui/agents-split.html`) or `http://127.0.0.1:8765/ui/agents-split.html?left=8765&right=8767`. Those child processes set **`CONTROL_API_TOKEN` empty** so the embedded UI and advisor can call **`/summary`** without auth. If you use a token for manual curl, unset it for local split testing or pass **`X-Control-Token`**.
 
 **Session recording & replay** — `scripts/record_arb_session.py` (optional `--write-meta`) and `scripts/replay_arb_session.py` verify deterministic replay. `scripts/run_historical_replay_suite.py --strict` batches JSONL files; committed fixtures live under `tests/fixtures/replay/`. `scripts/rigorous_backtest.py` records live cycles plus optional replay verification.
 

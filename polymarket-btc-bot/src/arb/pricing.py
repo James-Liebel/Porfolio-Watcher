@@ -7,7 +7,7 @@ from typing import Any
 
 from ..config import Settings
 from .book_matching import filled_size, walk_taker_levels
-from .fees import taker_fee_on_notional
+from .fees import paper_structural_taker_buy_cash, taker_fee_on_notional
 from .models import ArbEvent, ArbOpportunity, OpportunityLeg, OutcomeMarket, TokenBook
 
 
@@ -47,6 +47,25 @@ def _edge_bps(profit: float, capital: float) -> float:
     return (profit / capital) * 10000.0
 
 
+def _book_spread_bps(book: TokenBook) -> float | None:
+    mid = book.mid
+    if mid <= 1e-12:
+        return None
+    return (book.spread / mid) * 10000.0
+
+
+def _books_within_spread_cap(books: list[TokenBook], max_spread_bps: float) -> bool:
+    if max_spread_bps <= 0:
+        return True
+    for b in books:
+        sb = _book_spread_bps(b)
+        if sb is None:
+            return False
+        if sb > max_spread_bps + 1e-9:
+            return False
+    return True
+
+
 def _complete_set_buy_cash_out(
     legs_spec: list[tuple[TokenBook, float, bool]], size: float, config: Settings
 ) -> tuple[bool, float]:
@@ -60,7 +79,12 @@ def _complete_set_buy_cash_out(
             return False, 0.0
         for price, sz in ex:
             n = price * sz
-            total += n + taker_fee_on_notional(n, fees_en, config.paper_taker_fee_bps)
+            total += paper_structural_taker_buy_cash(
+                n,
+                fees_enabled=fees_en,
+                taker_fee_bps=config.paper_taker_fee_bps,
+                spread_penalty_bps=config.paper_spread_penalty_bps,
+            )
     return True, total
 
 
@@ -113,7 +137,12 @@ def _neg_risk_cashflows(
     buy_cost = 0.0
     for price, sz in ex_b:
         n = price * sz
-        buy_cost += n + taker_fee_on_notional(n, buy_fees_en, config.paper_taker_fee_bps)
+        buy_cost += paper_structural_taker_buy_cash(
+            n,
+            fees_enabled=buy_fees_en,
+            taker_fee_bps=config.paper_taker_fee_bps,
+            spread_penalty_bps=config.paper_spread_penalty_bps,
+        )
 
     sell_in = 0.0
     for book, lim, fe in sell_specs:
@@ -199,6 +228,7 @@ class OpportunityScanner:
         opportunities.sort(
             key=lambda opp: (
                 _annualized_edge_bps(opp.net_edge_bps, opp.seconds_to_expiry),
+                opp.expected_profit / max(opp.capital_required, 1e-9),
                 opp.expected_profit,
             ),
             reverse=True,
@@ -238,6 +268,10 @@ class OpportunityScanner:
                 )
             )
 
+        leg_books = [b for b, _, _ in legs_spec]
+        if not _books_within_spread_cap(leg_books, float(self._config.max_arb_leg_spread_bps)):
+            return None
+
         size, cash_out = _max_size_under_notional_complete_set(
             legs_spec, self._config.max_basket_notional, self._config
         )
@@ -262,6 +296,9 @@ class OpportunityScanner:
         if w is None:
             return []
         if w.net_edge_bps < self._config.min_complete_set_edge_bps or w.profit <= 0:
+            return []
+        min_p = float(self._config.arb_min_expected_profit_usd)
+        if min_p > 0 and w.profit < min_p - 1e-12:
             return []
 
         legs = [
@@ -346,6 +383,10 @@ class OpportunityScanner:
         if not sell_legs:
             return None
 
+        spread_books = [no_book] + [book for book, _, _ in sell_specs]
+        if not _books_within_spread_cap(spread_books, float(self._config.max_arb_leg_spread_bps)):
+            return None
+
         size, buy_cost, sell_in, profit = _max_size_neg_risk_under_notional(
             no_book,
             no_book.best_ask,
@@ -413,6 +454,9 @@ class OpportunityScanner:
             if opp is None:
                 continue
             if opp.net_edge_bps < self._config.min_neg_risk_edge_bps or opp.expected_profit <= 0:
+                continue
+            min_p = float(self._config.arb_min_expected_profit_usd)
+            if min_p > 0 and opp.expected_profit < min_p - 1e-12:
                 continue
             opportunities.append(opp)
         return opportunities

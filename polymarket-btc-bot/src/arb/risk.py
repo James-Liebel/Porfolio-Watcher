@@ -16,11 +16,45 @@ class ArbRiskManager:
         self.executed_count = 0
         self.rejected_count = 0
         self.last_decision_reason = ""
+        self.cycle_execution_block_reason: str | None = None
+        self._session_realized_pnl_baseline: float | None = None
+        self._equity_peak_session: float = 0.0
+        self._consecutive_execution_failures = 0
 
     async def hydrate_from_db(self, db: Database, exchange) -> None:
         deposits = await db.get_total_deposits()
         starting_cash = float(deposits) if deposits > 0 else float(self._config.initial_bankroll)
         exchange.set_starting_cash(starting_cash)
+
+    def capture_session_baseline(self, exchange) -> None:
+        """Call once after exchange state is restored so session loss / peak tracking start from truth."""
+        if self._session_realized_pnl_baseline is None:
+            self._session_realized_pnl_baseline = float(exchange.realized_pnl)
+        self._bump_equity_peak(exchange.equity)
+
+    def begin_cycle(self, *, books_synthetic: int) -> None:
+        self.cycle_execution_block_reason = None
+        thr = int(self._config.arb_halt_execution_if_synthetic_books_ge)
+        if thr > 0 and books_synthetic >= thr:
+            self.cycle_execution_block_reason = (
+                f"synthetic book gate ({books_synthetic} synthetic books >= {thr}; CLOB data quality)"
+            )
+
+    def record_execution_failure(self) -> None:
+        self._consecutive_execution_failures += 1
+        cap = int(self._config.arb_consecutive_execution_failures_halt)
+        if cap > 0 and self._consecutive_execution_failures >= cap:
+            self.halted = True
+            self.halt_reason = f"consecutive execution failures ({self._consecutive_execution_failures})"
+
+    def record_execution_success(self) -> None:
+        self._consecutive_execution_failures = 0
+
+    def _bump_equity_peak(self, equity: float) -> None:
+        if self._equity_peak_session <= 0:
+            self._equity_peak_session = float(equity)
+        else:
+            self._equity_peak_session = max(self._equity_peak_session, float(equity))
 
     def approve(
         self,
@@ -30,7 +64,13 @@ class ArbRiskManager:
         open_baskets_by_strategy: dict[str, int] | None = None,
     ) -> tuple[bool, str]:
         now = datetime.now(timezone.utc)
-        self._enforce_drawdown(exchange)
+        self._bump_equity_peak(exchange.equity)
+        self._enforce_stops(exchange)
+        if self.cycle_execution_block_reason:
+            self.rejected_count += 1
+            self.last_decision_reason = self.cycle_execution_block_reason
+            return False, self.cycle_execution_block_reason
+
         if self.halted:
             self.rejected_count += 1
             self.last_decision_reason = self.halt_reason or "trading halted"
@@ -100,16 +140,43 @@ class ArbRiskManager:
     async def resume(self) -> None:
         self.halted = False
         self.halt_reason = ""
+        self._equity_peak_session = 0.0
+        self._consecutive_execution_failures = 0
 
-    def _enforce_drawdown(self, exchange) -> None:
+    def _enforce_stops(self, exchange) -> None:
+        if self.halted:
+            return
+
         baseline = max(exchange.contributed_capital, 1.0)
         drawdown = max(baseline - exchange.equity, 0.0) / baseline
         if drawdown >= self._config.daily_loss_cap:
             self.halted = True
             self.halt_reason = f"daily drawdown cap reached ({drawdown:.2%})"
+            return
+
+        trail = float(self._config.arb_trailing_equity_drawdown_pct)
+        if trail > 0 and self._equity_peak_session > 0:
+            floor = self._equity_peak_session * (1.0 - trail)
+            if exchange.equity < floor - 1e-9:
+                self.halted = True
+                self.halt_reason = (
+                    f"trailing equity stop (equity {exchange.equity:.2f} < peak×(1−{trail:.0%}) "
+                    f"≈ {floor:.2f}; peak {self._equity_peak_session:.2f})"
+                )
+                return
+
+        loss_cap = float(self._config.arb_session_realized_loss_usd)
+        if loss_cap > 0 and self._session_realized_pnl_baseline is not None:
+            drop = float(exchange.realized_pnl) - self._session_realized_pnl_baseline
+            if drop <= -loss_cap - 1e-9:
+                self.halted = True
+                self.halt_reason = (
+                    f"session realized loss cap (Δ realized {drop:.2f} vs start ≤ −{loss_cap:.2f})"
+                )
 
     def summary(self, exchange, open_baskets: int) -> dict[str, float | int | bool | str]:
-        self._enforce_drawdown(exchange)
+        self._bump_equity_peak(exchange.equity)
+        self._enforce_stops(exchange)
         return {
             "trading_halted": self.halted,
             "halt_reason": self.halt_reason,
@@ -126,4 +193,6 @@ class ArbRiskManager:
             "executed_count": self.executed_count,
             "rejected_count": self.rejected_count,
             "last_decision_reason": self.last_decision_reason,
+            "equity_peak_session": round(self._equity_peak_session, 4),
+            "consecutive_execution_failures": self._consecutive_execution_failures,
         }

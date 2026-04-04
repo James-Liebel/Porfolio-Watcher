@@ -92,6 +92,9 @@ class ArbControlAPI:
     async def _ui_redirect(self, request: web.Request) -> web.StreamResponse:
         raise web.HTTPFound(location="/ui/index.html")
 
+    async def _split_ui_redirect(self, request: web.Request) -> web.StreamResponse:
+        raise web.HTTPFound(location="/ui/agents-split.html")
+
     async def _events(self, request: web.Request) -> web.Response:
         return _json(self._engine.events_snapshot())
 
@@ -258,6 +261,7 @@ class ArbControlAPI:
     async def run(self) -> None:
         app = web.Application(middlewares=[cors_middleware, self.auth_middleware])
         app.router.add_get("/health", self._health)
+        app.router.add_get("/split", self._split_ui_redirect)
         app.router.add_get("/summary", self._summary)
         app.router.add_get("/events", self._events)
         app.router.add_get("/opportunities", self._opportunities)

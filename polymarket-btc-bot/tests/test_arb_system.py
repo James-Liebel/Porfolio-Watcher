@@ -39,6 +39,12 @@ def _settings(**overrides) -> Settings:
         max_event_exposure_pct=1.0,
         daily_loss_cap=0.50,
         arb_poll_seconds=1,
+        paper_equity_snapshot_log=False,
+        arb_halt_execution_if_synthetic_books_ge=0,
+        max_arb_leg_spread_bps=0.0,
+        arb_min_expected_profit_usd=0.0,
+        arb_consecutive_execution_failures_halt=0,
+        paper_spread_penalty_bps=0.0,
     )
     defaults.update(overrides)
     return Settings(_env_file=None, **defaults)
@@ -130,6 +136,39 @@ class StaticMarketData:
 
 
 @pytest.mark.anyio
+async def test_paper_equity_snapshot_log_writes_jsonl(tmp_path):
+    event, books = _complete_set_event()
+    log_path = tmp_path / "eq.jsonl"
+    settings = _settings(
+        max_opportunities_per_cycle=1,
+        max_basket_notional=3.75,
+        paper_equity_snapshot_log=True,
+        paper_equity_log_path=str(log_path),
+    )
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse([event]),
+            market_data=StaticMarketData(books),
+        )
+        await engine.run_cycle()
+        text = log_path.read_text(encoding="utf-8")
+        line = text.strip().splitlines()[0]
+        payload = json.loads(line)
+        assert "summary" in payload and "last_cycle" in payload
+        assert payload["summary"]["equity"] is not None
+        assert payload["last_cycle"]["opportunities"] == 0
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.anyio
 async def test_run_cycle_includes_book_source_counts():
     event, books = _complete_set_event()
     settings = _settings(max_opportunities_per_cycle=1, max_basket_notional=3.75)
@@ -164,6 +203,20 @@ def test_complete_set_scanner_finds_arbitrage():
     assert len(complete_set) == 1
     assert complete_set[0].net_edge_bps > 0
     assert len(complete_set[0].legs) == 3
+
+
+def test_complete_set_scanner_skips_extreme_leg_spread():
+    event, books = _complete_set_event()
+    _set_book_source(books, "clob")
+    y1 = books["y1"]
+    y1.best_bid = 0.01
+    y1.best_ask = 0.99
+    y1.bids = [PriceLevel(0.01, 100)]
+    y1.asks = [PriceLevel(0.99, 100)]
+    scanner = OpportunityScanner(_settings(max_arb_leg_spread_bps=400.0))
+    opportunities = scanner.scan([event], books)
+    complete_set = [opp for opp in opportunities if opp.strategy_type == "complete_set"]
+    assert complete_set == []
 
 
 def test_neg_risk_scanner_finds_conversion_trade():

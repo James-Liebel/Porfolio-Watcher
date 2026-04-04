@@ -6,7 +6,7 @@ This document summarizes how closely `PaperExchange` + `OpportunityScanner` mirr
 
 1. **Shared taker walk** — `src/arb/book_matching.py` implements the same price/size walk used by `PaperExchange._simulate_executions` and by `OpportunityScanner` when estimating complete-set and neg-risk costs. Multi-level books (worse prices deeper in the ladder) affect both **approved size** and **capital_required**.
 
-2. **Shared fee math** — `src/arb/fees.py` supplies `taker_fee_on_notional` used by both the scanner (expected cash) and the exchange (fills). When `fees_enabled` is true on a market, `PAPER_TAKER_FEE_BPS` applies consistently.
+2. **Shared fee + buy spread math** — `src/arb/fees.py` supplies `taker_fee_on_notional` and `paper_structural_taker_buy_cash` (principal + taker fee + `PAPER_SPREAD_PENALTY_BPS` on each BUY slice). The **scanner** and **`PaperExchange`** use the same buy-side cash formula so expected profit and realized PnL stay aligned when spread penalty is non-zero.
 
 3. **Sizing under `MAX_BASKET_NOTIONAL`** — The scanner binary-searches the largest complete-set / neg-risk size whose **estimated cash out** (including fees) stays under the cap, instead of using a naive `sum(best_ask) * size` cap that could exceed the cap after slippage.
 
@@ -15,7 +15,7 @@ This document summarizes how closely `PaperExchange` + `OpportunityScanner` mirr
 ## Defaults
 
 - **`PAPER_TAKER_FEE_BPS`** defaults to **50** (0.5%) in `Settings`. Polymarket’s live schedule can differ by market and time; treat this as a **conservative placeholder** and tune from official docs or your account.
-- Set to **`0`** only if you intentionally want fee-free paper (e.g. certain tests).
+- **`PAPER_SPREAD_PENALTY_BPS`** defaults to **15** (0.15% of notional per BUY fill) so paper is not systematically **more optimistic** than the exchange. Set to **`0`** for fee-only tests.
 
 ## Observability
 
@@ -30,7 +30,7 @@ Replay canonicalization includes these fields (default **0** for older JSONL ses
 - **Settlement** remains a simplified $1/share binary payout model; verify against Polymarket rules for edge cases.
 - **Neg-risk conversion** in the exchange uses a simplified inventory split; scanner profit is cash-flow based (buy NO + sell YES legs) and should be close for the executed sequence but may not match every on-chain detail.
 - **Book staleness warnings** — `paper_exchange.stale_book_fill` is logged when a fill simulates against a book snapshot older than 30 s. This approximates the latency risk of the 20 s polling cycle; real fills in live mode hit a book that may have moved since the last refresh.
-- **`PAPER_SPREAD_PENALTY_BPS`** — optional extra cost added to every buy fill to model bid/ask spread not captured by single-level synthetic books. Recommended: set to 10-20 before going live to stress-test expected edge.
+- **`PAPER_SPREAD_PENALTY_BPS`** — optional extra cost on **BUY** fills (scanner + exchange). Default **15** bps; raise toward **20** for more conservative alignment with live.
 - **Cooldown persistence** — cooldowns now survive restarts via `arb_cooldowns` SQLite table; expired entries are pruned on load.
 - **Synthetic book filtering** — books with `source=="synthetic"` are now excluded from scanner input. They are still recorded in the DB and displayed in the dashboard.
 

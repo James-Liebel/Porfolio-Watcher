@@ -1,7 +1,8 @@
 /**
  * Polls the local advisor service (python -m agents.advisor_app) for LLM commentary.
  */
-const ADVISOR_BASE = "http://127.0.0.1:8780";
+const ADVISOR_BASE =
+  (typeof window !== "undefined" && window.__ADVISOR_BASE__) || "http://127.0.0.1:8780";
 const POLL_MS = 45_000;
 
 function renderAdviceText(text) {

@@ -1,6 +1,6 @@
 /**
  * app.js — Structural-arb dashboard
- * Polls ArbControlAPI (python -m src) at 127.0.0.1:8765.
+ * Polls the control API on the same host/port that serves /ui/ (see API_BASE).
  */
 
 // Same host when dashboard is served from /ui/ on the control API; file:// falls back to loopback.
@@ -15,6 +15,13 @@ let countdownTimer = null;
 let pollTimer = null;
 
 document.addEventListener("DOMContentLoaded", () => {
+  const dual = document.querySelector("a.dual-dash-link");
+  if (dual && window.location.port) {
+    dual.href =
+      "agents-split.html?left=" +
+      encodeURIComponent(window.location.port) +
+      "&right=8767";
+  }
   poll();
   startCountdown();
 });

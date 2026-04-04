@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""
+Kill prior listeners on the control/advisor ports, wipe dual-agent SQLite files,
+start two isolated paper traders (structural arb + optional directional overlay),
+and open the split dashboard in your browser.
+
+Usage (repo root):  python scripts/start_paper_split.py
+"""
+from __future__ import annotations
+
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+OLLAMA_PORT = 11434
+
+
+def _win_kill_port(port: int) -> None:
+    ps = (
+        f"$c = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue "
+        f"| Select-Object -First 1; if ($c) {{ Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue }}"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", ps],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+    )
+
+
+def kill_listen_ports(ports: list[int]) -> None:
+    if sys.platform == "win32":
+        for p in ports:
+            _win_kill_port(p)
+    else:
+        for p in ports:
+            subprocess.run(["sh", "-c", f"fuser -k {p}/tcp 2>/dev/null || true"], cwd=str(ROOT))
+
+
+def unlink_sqlite(path: Path) -> None:
+    for suffix in ("", "-wal", "-shm"):
+        p = Path(str(path) + suffix) if suffix else path
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:
+            if p.is_file():
+                p.unlink()
+
+
+def _tcp_listening(host: str, port: int, timeout: float = 0.4) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def ensure_ollama_server(popen_kw: dict) -> subprocess.Popen | None:
+    """Start `ollama serve` if Ollama is installed and nothing is listening on 11434."""
+    if _tcp_listening("127.0.0.1", OLLAMA_PORT):
+        print(f"Ollama already reachable on 127.0.0.1:{OLLAMA_PORT}")
+        return None
+    exe = shutil.which("ollama")
+    if not exe:
+        print(
+            "Ollama not found in PATH. Install from https://ollama.com then run "
+            "`ollama serve` and `ollama pull llama3.2` (or set LLM_PROVIDER / model in .env)."
+        )
+        return None
+    proc = subprocess.Popen([exe, "serve"], cwd=str(ROOT), **popen_kw)
+    print(f"Started `ollama serve` (PID {proc.pid})")
+    for _ in range(30):
+        if _tcp_listening("127.0.0.1", OLLAMA_PORT):
+            print(f"Ollama listening on 127.0.0.1:{OLLAMA_PORT}")
+            return proc
+        time.sleep(0.3)
+    print("Warning: Ollama did not open port 11434 in time; advisor may fail until it is up.")
+    return proc
+
+
+def advisor_env(agent_a_port: int, agent_b_port: int) -> dict[str, str]:
+    e = os.environ.copy()
+    e.update(
+        {
+            "LLM_PROVIDER": "ollama",
+            "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
+            "OLLAMA_MODEL": os.environ.get("OLLAMA_MODEL", "llama3.2"),
+            "ADVISOR_HOST": "127.0.0.1",
+            "ADVISOR_PORT": "8780",
+            "AGENT_A_PORT": str(agent_a_port),
+            "AGENT_B_PORT": str(agent_b_port),
+        }
+    )
+    return e
+
+
+def agent_env(port: int, rel_db: str, name: str) -> dict[str, str]:
+    e = os.environ.copy()
+    db_path = (ROOT / rel_db).resolve()
+    e.update(
+        {
+            "CONTROL_API_PORT": str(port),
+            "ARB_SQLITE_PATH": str(db_path),
+            "AGENT_DISPLAY_NAME": name,
+            # So browser + advisor can call /summary without X-Control-Token (local UI).
+            "CONTROL_API_TOKEN": "",
+            "PAPER_TRADE": "true",
+            "INITIAL_BANKROLL": "300",
+            "PAPER_TAKER_FEE_BPS": "50",
+            "PAPER_SPREAD_PENALTY_BPS": "15",
+            "ARB_POLL_SECONDS": "25",
+            "MAX_BASKET_NOTIONAL": "50",
+            "MAX_EVENT_EXPOSURE_PCT": "0.25",
+            "MAX_TOTAL_OPEN_BASKETS": "4",
+            "ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE": "0",
+            "MIN_COMPLETE_SET_EDGE_BPS": "18",
+            "MIN_NEG_RISK_EDGE_BPS": "28",
+            "ARB_MIN_EXPECTED_PROFIT_USD": "0.1",
+            # Second sleeve: paper YES buys when model edge vs ask is wide (activity when structural arbs are scarce).
+            "ENABLE_DIRECTIONAL_OVERLAY": "true",
+            "DIRECTIONAL_OVERLAY_EVERY_N_CYCLES": "2",
+            "DIRECTIONAL_OVERLAY_ONLY_WHEN_NO_ARB": "true",
+            "DIRECTIONAL_OVERLAY_MIN_EDGE": "0.06",
+            "DIRECTIONAL_OVERLAY_MAX_SPREAD": "0.14",
+            "DIRECTIONAL_OVERLAY_MAX_NOTIONAL": "20",
+            "DIRECTIONAL_OVERLAY_CASH_FLOOR": "50",
+        }
+    )
+    return e
+
+
+def main() -> int:
+    agents: list[tuple[int, str, str]] = [
+        (8765, "data/arb_agent_1.db", "Paper A"),
+        (8767, "data/arb_agent_2.db", "Paper B"),
+    ]
+    kill_listen_ports([8765, 8767, 8778, 8780])
+    time.sleep(1.5)
+
+    (ROOT / "data").mkdir(parents=True, exist_ok=True)
+    for _, rel, _ in agents:
+        unlink_sqlite((ROOT / rel).resolve())
+
+    popen_kw: dict = {}
+    if sys.platform == "win32":
+        popen_kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+    for port, rel, name in agents:
+        subprocess.Popen(
+            [sys.executable, "-m", "src"],
+            cwd=str(ROOT),
+            env=agent_env(port, rel, name),
+            **popen_kw,
+        )
+        print(f"Started {name!r} on port {port}  db={rel}")
+
+    ensure_ollama_server(popen_kw)
+    time.sleep(1.0)
+
+    subprocess.Popen(
+        [sys.executable, "-m", "agents.advisor_app"],
+        cwd=str(ROOT),
+        env=advisor_env(agents[0][0], agents[1][0]),
+        **popen_kw,
+    )
+    print("Started LLM advisor on http://127.0.0.1:8780 (LLM_PROVIDER=ollama)")
+    if not _tcp_listening("127.0.0.1", OLLAMA_PORT):
+        print("Ollama is not on 127.0.0.1:11434 — install Ollama, run `ollama serve`, then `ollama pull llama3.2`.")
+
+    split_url = f"http://127.0.0.1:{agents[0][0]}/split"
+    print()
+    print(f"Open split UI: {split_url}")
+    print("Direct: http://127.0.0.1:8765/ui/agents-split.html?left=8765&right=8767")
+    print("Advisor health: http://127.0.0.1:8780/health")
+    time.sleep(5)
+    try:
+        import webbrowser
+
+        webbrowser.open(split_url)
+    except Exception:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

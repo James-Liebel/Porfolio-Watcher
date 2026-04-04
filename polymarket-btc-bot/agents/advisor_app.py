@@ -44,7 +44,7 @@ def _settings(request: web.Request) -> AdvisorSettings:
 
 async def handle_health(request: web.Request) -> web.Response:
     settings = _settings(request)
-    timeout = min(5.0, settings.advisor_http_timeout)
+    timeout = min(30.0, settings.advisor_http_timeout)
     async with aiohttp.ClientSession() as session:
         a = await fetch_agent_context(session, "127.0.0.1", settings.agent_a_port, "A", timeout)
         b = await fetch_agent_context(session, "127.0.0.1", settings.agent_b_port, "B", timeout)
@@ -74,7 +74,7 @@ async def handle_advice(request: web.Request) -> web.Response:
         out["cached"] = True
         return web.json_response(out)
 
-    timeout = min(15.0, settings.advisor_http_timeout)
+    timeout = min(45.0, settings.advisor_http_timeout)
     async with aiohttp.ClientSession() as session:
         a_ctx = await fetch_agent_context(
             session, "127.0.0.1", settings.agent_a_port, "Structural · A", timeout

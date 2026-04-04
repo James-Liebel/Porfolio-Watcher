@@ -34,6 +34,16 @@ body {
 .split-top a {
   color: #4f8ef7;
 }
+.split-fallback {
+  margin: 0;
+  padding: 8px 20px;
+  font-size: 0.78rem;
+  color: #8b9abb;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.split-fallback a {
+  color: #4f8ef7;
+}
 .split-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

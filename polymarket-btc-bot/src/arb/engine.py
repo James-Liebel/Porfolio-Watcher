@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
 
@@ -94,6 +96,7 @@ class ArbEngine:
         self._risk.cooldowns = await self._repository.load_cooldowns()
         await self._repository.replace_positions(self._exchange.get_positions())
         await self._persist_runtime_state()
+        self._risk.capture_session_baseline(self._exchange)
         self._initialized = True
 
     async def shutdown(self) -> None:
@@ -161,6 +164,14 @@ class ArbEngine:
             self._opportunities = opportunities
             executed = 0
 
+            self._risk.begin_cycle(books_synthetic=bsrc["books_synthetic"])
+            if self._risk.cycle_execution_block_reason:
+                logger.warning(
+                    "arb_engine.execution_skipped_data_quality",
+                    reason=self._risk.cycle_execution_block_reason,
+                    synthetic=bsrc["books_synthetic"],
+                )
+
             for opportunity in opportunities:
                 open_baskets = self._open_basket_count()
                 approved, reason = self._risk.approve(
@@ -181,6 +192,7 @@ class ArbEngine:
                 basket = await self._execute_opportunity(opportunity)
                 if basket is not None:
                     executed += 1
+                    self._risk.record_execution_success()
                     self._risk.record_execution(opportunity)
 
             from ..alpha.overlay import run_directional_overlay
@@ -218,7 +230,29 @@ class ArbEngine:
             )
             if self._config.arb_log_cycle_diagnostics:
                 logger.info("arb_engine.cycle_diagnostics", **diagnostics)
+            await self._append_paper_equity_snapshot()
             return dict(self._last_cycle_summary)
+
+    async def _append_paper_equity_snapshot(self) -> None:
+        if not self._config.paper_trade or not self._config.paper_equity_snapshot_log:
+            return
+        path = (self._config.paper_equity_log_path or "").strip()
+        if not path:
+            return
+        record = {
+            "ts": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
+            "summary": self.summary(),
+            "last_cycle": dict(self._last_cycle_summary),
+        }
+        line = json.dumps(record, default=str) + "\n"
+
+        def _write() -> None:
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("a", encoding="utf-8") as f:
+                f.write(line)
+
+        await asyncio.to_thread(_write)
 
     async def _execute_opportunity(self, opportunity: ArbOpportunity) -> BasketRecord | None:
         basket = BasketRecord(
@@ -286,6 +320,7 @@ class ArbEngine:
             await self._repository.replace_positions(self._exchange.get_positions())
             await self._persist_runtime_state()
             logger.error("arb_engine.execution_failed", event_id=opportunity.event_id, error=str(exc))
+            self._risk.record_execution_failure()
             return None
 
     async def _execute_neg_risk_basket(self, opportunity: ArbOpportunity, basket: BasketRecord) -> None:

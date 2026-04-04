@@ -53,6 +53,8 @@ def main() -> int:
         env["MAX_TOTAL_OPEN_BASKETS"] = "2"
         env["MAX_EVENT_EXPOSURE_PCT"] = "0.12"
         env["MAX_OPPORTUNITIES_PER_CYCLE"] = "2"
+        # Single-process default pauses at 6+ synthetic books; dual agents hit that often on flaky CLOB.
+        env["ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE"] = "15"
         proc = subprocess.Popen(
             [sys.executable, "-m", "src"],
             cwd=str(ROOT),
@@ -74,9 +76,11 @@ def main() -> int:
         )
         print(f"Started LLM advisor (PID {advisor_proc.pid}) on http://127.0.0.1:8780")
 
-    split = (ROOT / "frontend" / "agents-split.html").resolve()
+    split_file = (ROOT / "frontend" / "agents-split.html").resolve()
+    split_url = f"http://127.0.0.1:{agents[0][0]}/ui/agents-split.html"
     print()
-    print(f"Open split dashboard: {split}")
+    print(f"Split dashboard (served by agent A): {split_url}")
+    print(f"Or open file: {split_file}")
     print("Stop: Ctrl+C here (agents stopped; advisor stopped if running).")
     print()
 

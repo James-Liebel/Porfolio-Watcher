@@ -14,22 +14,84 @@
   <header class="split-top">
     <h1>PolyArb · dual structural agents</h1>
     <p class="hint">
-      Each pane is a separate process: its own SQLite state and <strong>$100</strong> paper bankroll
-      (<code>INITIAL_BANKROLL</code>). Official LLM toolkit:
+      This page embeds <strong>two control APIs</strong> (two <code>python -m src</code> processes), each with its own
+      <code>CONTROL_API_PORT</code> and <code>ARB_SQLITE_PATH</code>. The single dashboard
+      (<code>/ui/index.html</code>) only ever shows <em>one</em> bot — the host you opened.
+      Use <strong><code>http://127.0.0.1:8765/ui/agents-split.html</code></strong> (served by the bot) — not a <code>file://</code> path, or iframes often stay blank.
+      One-shot: <code>python scripts/start_paper_split.py</code> (two agents + Ollama advisor on <strong>8780</strong>).
+      Other ports: <code>?left=8778&amp;right=8767</code> or <code>?ports=8778,8767</code>.
+      Official LLM toolkit:
       <a href="https://github.com/Polymarket/agents" target="_blank" rel="noopener noreferrer">Polymarket/agents</a>
       — this repo runs the structural-arb engine only.
     </p>
   </header>
   <div class="split-grid">
     <div class="pane">
-      <div class="pane-title">Agent 1 · 127.0.0.1:8765</div>
-      <iframe title="Structural agent 1" src="http://127.0.0.1:8765/ui/index.html"></iframe>
+      <div class="pane-title" data-split-title="1">Agent 1 · …</div>
+      <iframe title="Structural agent 1" data-split-frame="1" src="about:blank"></iframe>
     </div>
     <div class="pane">
-      <div class="pane-title">Agent 2 · 127.0.0.1:8767</div>
-      <iframe title="Structural agent 2" src="http://127.0.0.1:8767/ui/index.html"></iframe>
+      <div class="pane-title" data-split-title="2">Agent 2 · …</div>
+      <iframe title="Structural agent 2" data-split-frame="2" src="about:blank"></iframe>
     </div>
   </div>
+  <p class="hint split-fallback" id="split-fallback-links"></p>
+  <script>
+    window.__ADVISOR_BASE__ = "http://127.0.0.1:8780";
+    (function () {
+      var q = new URLSearchParams(window.location.search);
+      var host = (q.get("host") || "127.0.0.1").trim() || "127.0.0.1";
+      if (!/^[0-9a-zA-Z.:-]+$/.test(host)) host = "127.0.0.1";
+      var left = q.get("left") || q.get("l");
+      var right = q.get("right") || q.get("r");
+      var portsParam = q.get("ports");
+      if (portsParam) {
+        var parts = portsParam.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+        if (parts.length >= 1 && !left) left = parts[0];
+        if (parts.length >= 2 && !right) right = parts[1];
+      }
+      function cleanPort(p, fallback) {
+        var n = parseInt(String(p), 10);
+        return Number.isFinite(n) && n > 0 && n < 65536 ? String(n) : fallback;
+      }
+      var lp = cleanPort(left, "8765");
+      var rp = cleanPort(right, "8767");
+      var base = "http://" + host + ":";
+      document.querySelectorAll("[data-split-frame=\"1\"]").forEach(function (el) {
+        el.src = base + lp + "/ui/index.html";
+      });
+      document.querySelectorAll("[data-split-frame=\"2\"]").forEach(function (el) {
+        el.src = base + rp + "/ui/index.html";
+      });
+      document.querySelectorAll("[data-split-title=\"1\"]").forEach(function (el) {
+        el.textContent = "Agent 1 · " + host + ":" + lp;
+      });
+      document.querySelectorAll("[data-split-title=\"2\"]").forEach(function (el) {
+        el.textContent = "Agent 2 · " + host + ":" + rp;
+      });
+      var fb = document.getElementById("split-fallback-links");
+      if (fb) {
+        fb.innerHTML =
+          "If panes say <strong>offline</strong>, open each bot directly: " +
+          '<a target="_blank" rel="noopener noreferrer" href="' +
+          base +
+          lp +
+          '/ui/index.html">A dashboard</a> · ' +
+          '<a target="_blank" rel="noopener noreferrer" href="' +
+          base +
+          rp +
+          '/ui/index.html">B dashboard</a> · ' +
+          '<a target="_blank" rel="noopener noreferrer" href="' +
+          base +
+          lp +
+          '/summary">A JSON</a> · ' +
+          '<a target="_blank" rel="noopener noreferrer" href="' +
+          base +
+          rp +
+          '/summary">B JSON</a>';
+      }
+    })();
+  </script>
 
   <section class="advice-panel" aria-label="LLM advisor">
     <div class="advice-head">

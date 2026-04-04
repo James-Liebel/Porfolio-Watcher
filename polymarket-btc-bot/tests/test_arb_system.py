@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 
@@ -12,7 +13,7 @@ from src.arb.engine import ArbEngine
 from src.arb.exchange import PaperExchange
 from src.arb.models import ArbEvent, OrderIntent, OutcomeMarket, PriceLevel, TokenBook
 from src.arb.pricing import OpportunityScanner
-from src.arb.replay import replay_cycle_records
+from src.arb.replay import load_cycle_records, replay_cycle_records
 from src.arb.repository import ArbRepository
 from src.config import Settings
 from src.storage.db import Database
@@ -507,6 +508,35 @@ async def test_full_engine_replay_reproduces_recorded_cycles():
         assert all(cycle["matched"] for cycle in replay_result["cycles"])
     finally:
         os.unlink(path)
+
+
+@pytest.mark.anyio
+async def test_committed_replay_fixtures_replay_cleanly():
+    """Regression guard: JSONL under tests/fixtures/replay/ must replay with zero mismatches."""
+    root = os.path.join(os.path.dirname(__file__), "fixtures", "replay")
+    if not os.path.isdir(root):
+        pytest.skip("no tests/fixtures/replay directory")
+
+    jsonl_files = sorted(
+        f for f in os.listdir(root) if f.endswith(".jsonl")
+    )
+    if not jsonl_files:
+        pytest.skip("no *.jsonl replay fixtures")
+
+    for name in jsonl_files:
+        jsonl_path = os.path.join(root, name)
+        stem = os.path.splitext(name)[0]
+        meta_path = os.path.join(root, f"{stem}.meta.json")
+        assert os.path.isfile(meta_path), f"missing meta for {name}: {meta_path}"
+        meta = json.loads(open(meta_path, encoding="utf-8").read())
+        inner = meta.get("settings")
+        assert isinstance(inner, dict), f"{meta_path} must contain settings dict"
+        config = Settings(_env_file=None, **inner)
+        records = load_cycle_records(jsonl_path)
+        replay_result = await replay_cycle_records(records, config)
+        assert replay_result["mismatch_count"] == 0, (
+            f"{name}: replay mismatches — {replay_result['cycles']}"
+        )
 
 
 @pytest.mark.anyio

@@ -31,6 +31,11 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help="Output JSONL path. Defaults to REPLAY_OUTPUT_DIR/arb-session-<timestamp>.jsonl",
     )
+    parser.add_argument(
+        "--write-meta",
+        action="store_true",
+        help="Also write <stem>.meta.json with Settings snapshot for run_historical_replay_suite.py.",
+    )
     return parser.parse_args()
 
 
@@ -66,6 +71,15 @@ async def _main() -> int:
         await engine.shutdown()
 
     print(f"Wrote {args.cycles} cycle snapshots to {output_path}")
+    if args.write_meta:
+        meta_path = output_path.with_name(f"{output_path.stem}.meta.json")
+        meta = {
+            "fixture": output_path.stem,
+            "description": "Live-recorded session; replay with same code version when possible.",
+            "settings": json.loads(config.model_dump_json()),
+        }
+        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        print(f"Wrote {meta_path}")
     return 0
 
 

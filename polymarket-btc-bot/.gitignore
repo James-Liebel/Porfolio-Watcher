@@ -25,6 +25,7 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 data/replays/
+data/backtests/
 *.sql
 
 # Logs

@@ -231,6 +231,12 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help="Output root (default data/backtests/dual-<timestamp>).",
     )
+    p.add_argument(
+        "--max-tracked-events",
+        type=int,
+        default=500,
+        help="Maximum events to track (default 500).",
+    )
     return p.parse_args()
 
 
@@ -245,6 +251,7 @@ async def _main() -> int:
     root.mkdir(parents=True, exist_ok=True)
 
     base_kw = _dual_shared_settings_kwargs()
+    base_kw["max_tracked_events"] = args.max_tracked_events
 
     cfg_arb = Settings(
         **base_kw,
@@ -253,8 +260,10 @@ async def _main() -> int:
         enable_directional_overlay=False,
         directional_overlay_llm_news=False,
     )
+    cfg_overlay_kw = base_kw.copy()
+    cfg_overlay_kw["clob_book_fetch_concurrency"] = 50
     cfg_overlay = Settings(
-        **base_kw,
+        **cfg_overlay_kw,
         control_api_port=59902,
         agent_display_name="Ollama overlay (paper backtest)",
         enable_directional_overlay=True,

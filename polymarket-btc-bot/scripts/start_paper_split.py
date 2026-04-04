@@ -164,6 +164,7 @@ def ollama_overlay_env(port: int, rel_db: str, name: str) -> dict[str, str]:
             "DIRECTIONAL_OVERLAY_MAX_SPREAD": "0.14",
             "DIRECTIONAL_OVERLAY_MAX_NOTIONAL": "12",
             "DIRECTIONAL_OVERLAY_CASH_FLOOR": "25",
+            "CLOB_BOOK_FETCH_CONCURRENCY": "50",
         }
     )
     return e

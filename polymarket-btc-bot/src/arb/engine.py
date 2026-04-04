@@ -70,6 +70,8 @@ class ArbEngine:
         self._cycle_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._initialized = False
+        self._current_cycle_pct = 0.0
+        self._current_cycle_step = ""
 
     @property
     def risk(self) -> ArbRiskManager:
@@ -137,7 +139,15 @@ class ArbEngine:
             for event in events:
                 await self._repository.upsert_event(event)
 
-            books = await self._market_data.refresh(events)
+            self._current_cycle_step = "fetching_books"
+            self._current_cycle_pct = 0.0
+
+            def _on_progress(pct: float) -> None:
+                self._current_cycle_pct = pct
+
+            books = await self._market_data.refresh(events, on_progress=_on_progress)
+            self._current_cycle_step = "scanning"
+            self._current_cycle_pct = 100.0
             # Strip synthetic books before scanning so false edges are never scored.
             real_books = {
                 token_id: book
@@ -465,6 +475,8 @@ class ArbEngine:
                 "directional_overlay_enabled": bool(self._config.enable_directional_overlay),
                 "directional_overlay_llm_news": bool(self._config.directional_overlay_llm_news),
                 "max_tracked_events_config": int(self._config.max_tracked_events),
+                "cycle_progress_pct": round(self._current_cycle_pct, 1),
+                "cycle_step": self._current_cycle_step,
             }
         )
         return payload

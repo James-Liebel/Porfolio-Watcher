@@ -40,6 +40,7 @@ async function poll() {
 
     renderHeader(health, summary);
     renderStatCards(summary);
+    renderProgress(summary);
     renderDiagnostics(summary);
     renderEventsList(Array.isArray(events) ? events : []);
     renderBasketsTable(Array.isArray(baskets) ? baskets : []);
@@ -145,6 +146,28 @@ function renderDiagnostics(s) {
     )
     .join("")}</dl>`;
 }
+
+function renderProgress(s) {
+  const container = document.getElementById("cycle-progress");
+  const stepLabel = document.getElementById("progress-step-label");
+  const pctLabel = document.getElementById("progress-pct-label");
+  const bar = document.getElementById("progress-bar-inner");
+
+  if (!s || s.cycle_progress_pct == null) {
+    if (container) container.classList.add("hidden");
+    return;
+  }
+
+  if (container) container.classList.remove("hidden");
+  
+  const pct = Number(s.cycle_progress_pct || 0);
+  const step = String(s.cycle_step || "active").replace(/_/g, " ");
+
+  if (stepLabel) stepLabel.textContent = "Current task: " + step.charAt(0).toUpperCase() + step.slice(1) + "…";
+  if (pctLabel) pctLabel.textContent = pct + "%";
+  if (bar) bar.style.width = pct + "%";
+}
+
 
 function renderEventsList(events) {
   const el = document.getElementById("events-list");

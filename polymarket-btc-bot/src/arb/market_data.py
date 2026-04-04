@@ -42,7 +42,9 @@ class ClobMarketDataService:
                 logger.warning("market_data.clob_unavailable", error=str(exc))
                 self._client = None
 
-    async def refresh(self, events: list[ArbEvent]) -> dict[str, TokenBook]:
+    async def refresh(
+        self, events: list[ArbEvent], on_progress: Any | None = None
+    ) -> dict[str, TokenBook]:
         markets: list[tuple[OutcomeMarket, str, str]] = []
         for event in events:
             for market in event.markets:
@@ -68,9 +70,30 @@ class ClobMarketDataService:
             _gated_fetch(market, token_id, contract_side)
             for market, token_id, contract_side in markets
         ]
-        for book in await asyncio.gather(*tasks):
+        completed = 0
+        total = len(tasks)
+        if total > 0:
+            logger.info("market_data.fetch_start", port=self._config.control_api_port, total=total)
+
+        for coro in asyncio.as_completed(tasks):
+            book = await coro
+            completed += 1
+            pct = round(completed / total * 100, 1)
+            if on_progress:
+                on_progress(pct)
+
+            if completed % 50 == 0 or completed == total:
+                logger.info(
+                    "market_data.progress",
+                    port=self._config.control_api_port,
+                    done=completed,
+                    total=total,
+                    pct=pct,
+                )
+
             if isinstance(book, Exception):
-                logger.warning("market_data.book_error", error=str(book))
+                # Don't log every single error if we're doing hundreds, just a warning
+                # but we still count it as 'done' for the progress bar.
                 continue
             books[book.token_id] = book
 

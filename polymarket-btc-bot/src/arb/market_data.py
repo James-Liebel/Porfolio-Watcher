@@ -130,6 +130,11 @@ class ClobMarketDataService:
         if not bids and not asks:
             return self._synthetic_book(market, token_id, contract_side)
 
+        # py_clob_client may return bids ascending or descending depending on version.
+        # Normalise: bids descending (best = highest price first), asks ascending (best = lowest price first).
+        bids.sort(key=lambda l: l.price, reverse=True)
+        asks.sort(key=lambda l: l.price)
+
         best_bid = bids[0].price if bids else 0.0
         best_ask = asks[0].price if asks else 0.0
         if best_bid <= 0 or best_ask <= 0:

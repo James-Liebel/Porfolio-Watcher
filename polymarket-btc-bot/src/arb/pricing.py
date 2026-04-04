@@ -489,6 +489,18 @@ class OpportunityScanner:
                     mx = max(raw_edges)
                     best_nr_bps = mx if best_nr_bps is None else max(best_nr_bps, mx)
 
+        # Median book spread (bps) across all books that have both bid and ask > 0.
+        spreads_bps: list[float] = []
+        for book in books.values():
+            if book.best_bid > 0 and book.best_ask > 0:
+                mid = (book.best_bid + book.best_ask) / 2
+                if mid > 1e-9:
+                    spreads_bps.append((book.best_ask - book.best_bid) / mid * 10000)
+        spreads_bps.sort()
+        median_spread_bps: float | None = (
+            spreads_bps[len(spreads_bps) // 2] if spreads_bps else None
+        )
+
         return {
             "events_in_universe": len(events),
             "neg_risk_tagged_events": neg_tagged,
@@ -498,4 +510,6 @@ class OpportunityScanner:
             "max_raw_neg_risk_edge_bps": best_nr_bps,
             "min_complete_set_edge_bps_config": float(self._config.min_complete_set_edge_bps),
             "min_neg_risk_edge_bps_config": float(self._config.min_neg_risk_edge_bps),
+            "median_book_spread_bps": median_spread_bps,
+            "max_arb_leg_spread_bps_config": float(self._config.max_arb_leg_spread_bps),
         }

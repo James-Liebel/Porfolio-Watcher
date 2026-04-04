@@ -53,7 +53,13 @@ async function pollAdvice() {
       return;
     }
     status.classList.remove("advice-error");
-    status.textContent = data.cached ? "Cached brief" : "Fresh brief";
+    if (data.stale) {
+      status.textContent = "Stale brief (refreshing…)";
+    } else if (data.cached) {
+      status.textContent = "Cached brief";
+    } else {
+      status.textContent = "Fresh brief";
+    }
     meta.textContent = "Provider: " + (data.provider || "—");
     renderAdviceText(data.markdown || "—");
   } catch (e) {

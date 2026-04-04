@@ -33,7 +33,7 @@ class AdvisorSettings(BaseSettings):
 
     advisor_host: str = Field(default="127.0.0.1", alias="ADVISOR_HOST")
     advisor_port: int = Field(default=8780, alias="ADVISOR_PORT")
-    advice_cache_seconds: int = Field(default=90, alias="ADVICE_CACHE_SECONDS")
+    advice_cache_seconds: int = Field(default=300, alias="ADVICE_CACHE_SECONDS")
     advisor_http_timeout: float = Field(
         default=240.0,
         alias="ADVISOR_HTTP_TIMEOUT",

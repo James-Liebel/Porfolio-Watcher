@@ -11,6 +11,7 @@ Writes under data/prediction_training/autorun-<utc>/ then prints metrics and a s
 
 Usage (from polymarket-btc-bot):
   .venv\\Scripts\\python.exe scripts\\fetch_real_prediction_backtest.py --limit 25
+  .venv\\Scripts\\python.exe scripts\\fetch_real_prediction_backtest.py --limit 40 --contested-only --train-fraction 0.7
 """
 from __future__ import annotations
 
@@ -35,12 +36,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.prediction.cases import build_event_cases  # noqa: E402
-from src.prediction.metrics import brier_score, log_loss_binary  # noqa: E402
-from src.prediction.predictors import (  # noqa: E402
-    predict_history_shrunk,
-    predict_history_signal,
-    predict_news_keywords,
-)
+from src.prediction.evaluate import compute_prediction_metrics, split_cases_chronologically  # noqa: E402
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
 CLOB_BASE = "https://clob.polymarket.com"
@@ -234,6 +230,12 @@ def main() -> int:
         default=0.28,
         help="Market weight in historical shrink blend (see predict_history_shrunk).",
     )
+    ap.add_argument(
+        "--train-fraction",
+        type=float,
+        default=None,
+        help="If set (e.g. 0.7), also report metrics on train vs test split by event cutoff (chronological).",
+    )
     args = ap.parse_args()
 
     collected: list[dict[str, Any]] = []
@@ -396,31 +398,22 @@ def main() -> int:
 
     report_path = out / "report.json"
     cases = build_event_cases(ev_path, nw_path, hi_path)
-    ys = [c.resolved_yes for c in cases]
-    market_ps = [c.market_yes_price for c in cases]
-    h_ps = [predict_history_signal(c) for c in cases]
-    hs_ps = [predict_history_shrunk(c, market_weight=args.shrink_weight) for c in cases]
-    n_ps = [predict_news_keywords(c) for c in cases]
-    blend = [(h + n) / 2.0 for h, n in zip(h_ps, n_ps, strict=True)]
-    blend_s = [(hs + n) / 2.0 for hs, n in zip(hs_ps, n_ps, strict=True)]
-
-    def pack(name: str, ps: list[float]) -> dict[str, Any]:
-        return {
-            "name": name,
-            "brier": brier_score(ys, ps),
-            "log_loss": log_loss_binary(ys, ps),
-        }
-
-    metrics = [
-        pack("baseline_market", market_ps),
-        pack("historical_signal", h_ps),
-        pack("historical_shrunk", hs_ps),
-        pack("news_keywords", n_ps),
-        pack("blend_half", blend),
-        pack("blend_shrunk_news", blend_s),
-    ]
+    full_eval = compute_prediction_metrics(cases, shrink_weight=float(args.shrink_weight))
+    metrics = full_eval["metrics"]
 
     n_total = len(cases)
+    train_test_block: dict[str, Any] | None = None
+    if args.train_fraction is not None and n_total >= 2:
+        tr, te = split_cases_chronologically(cases, float(args.train_fraction))
+        train_test_block = {
+            "train_fraction_arg": float(args.train_fraction),
+            "train_n": len(tr),
+            "test_n": len(te),
+            "train_metrics": compute_prediction_metrics(tr, shrink_weight=float(args.shrink_weight))["metrics"],
+            "test_metrics": compute_prediction_metrics(te, shrink_weight=float(args.shrink_weight))["metrics"]
+            if te
+            else [],
+        }
     n_clob = sum(1 for r in meta_rows if r.clob_ok)
     n_news = sum(1 for r in meta_rows if r.news_count > 0)
     n_hist = sum(1 for r in meta_rows if r.history_ok)
@@ -435,6 +428,7 @@ def main() -> int:
         "contested_band": [args.contested_min, args.contested_max] if args.contested_only else None,
         "shrink_weight": args.shrink_weight,
         "metrics": metrics,
+        "train_test": train_test_block,
         "notes": [
             "Baseline uses CLOB YES price at/ before cutoff when available; else 0.5.",
             "Historical uses mean of latest CoinGecko 7d/1d log-return signals (BTC/ETH-titled markets); shrink blends that with market YES.",
@@ -462,6 +456,19 @@ def main() -> int:
         mark = "  <-- best Brier" if m["name"] == best["name"] else ""
         print(f"  {m['name']:<22}  Brier={m['brier']:.4f}  LogLoss={m['log_loss']:.4f}{mark}")
 
+    if train_test_block and train_test_block.get("test_n", 0) > 0:
+        print("\n--- Train / test (by cutoff time) ---\n")
+        print(
+            f"  train_n={train_test_block['train_n']}  test_n={train_test_block['test_n']}  "
+            f"fraction={train_test_block['train_fraction_arg']}\n"
+        )
+        tm = {m["name"]: m for m in train_test_block["test_metrics"]}
+        for name in ("baseline_market", "news_keywords", "blend_shrunk_news"):
+            if name in tm:
+                m = tm[name]
+                print(f"  TEST {name:<20}  Brier={m['brier']:.4f}  LogLoss={m['log_loss']:.4f}")
+        print("  (Use full report.json for train metrics and all model rows.)")
+
     print("\n--- Analysis ---\n")
     if n_total < 5:
         print("Very small sample — treat scores as illustrative only.\n")
@@ -480,7 +487,7 @@ def main() -> int:
 
     if b_hs < b_h:
         print(
-            "Historical shrink (toward market YES) improved Brier vs raw crypto momentum — "
+            "Historical shrink (toward market YES) improved Brier vs raw crypto momentum - "
             "heuristic was over-dispersed relative to prices.\n"
         )
     if b_h < b_base:

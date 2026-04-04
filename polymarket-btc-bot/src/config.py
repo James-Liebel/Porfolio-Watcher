@@ -168,6 +168,63 @@ class Settings(BaseSettings):
     # Log per-cycle scanner diagnostics (near-miss edges, structural counts) at INFO.
     arb_log_cycle_diagnostics: bool = Field(default=True, alias="ARB_LOG_CYCLE_DIAGNOSTICS")
 
+    # ── Optional directional overlay (paper): news + crypto momentum vs CLOB ask ──
+    enable_directional_overlay: bool = Field(
+        default=False,
+        alias="ENABLE_DIRECTIONAL_OVERLAY",
+        description=(
+            "Second sleeve: after structural arb, optionally buy YES on simple binary markets "
+            "when blended model probability exceeds ask by DIRECTIONAL_OVERLAY_MIN_EDGE. Paper only."
+        ),
+    )
+    directional_overlay_every_n_cycles: int = Field(
+        default=3,
+        alias="DIRECTIONAL_OVERLAY_EVERY_N_CYCLES",
+        description="Run overlay every N arb cycles (reduces RSS / CoinGecko load).",
+    )
+    directional_overlay_only_when_no_arb: bool = Field(
+        default=True,
+        alias="DIRECTIONAL_OVERLAY_ONLY_WHEN_NO_ARB",
+        description="If true, overlay runs only when this cycle found zero arb opportunities and executed zero.",
+    )
+    directional_overlay_max_events_per_cycle: int = Field(
+        default=5,
+        alias="DIRECTIONAL_OVERLAY_MAX_EVENTS_PER_CYCLE",
+    )
+    directional_overlay_min_edge: float = Field(
+        default=0.10,
+        alias="DIRECTIONAL_OVERLAY_MIN_EDGE",
+        description="Min (model_p - yes_ask) to consider a paper FOK buy.",
+    )
+    directional_overlay_max_spread: float = Field(
+        default=0.12,
+        alias="DIRECTIONAL_OVERLAY_MAX_SPREAD",
+        description="Skip YES book if (ask - bid) exceeds this (wide spread = unreliable mid).",
+    )
+    directional_overlay_max_notional: float = Field(
+        default=12.0,
+        alias="DIRECTIONAL_OVERLAY_MAX_NOTIONAL",
+        description="Cap notional (USD) per overlay fill.",
+    )
+    directional_overlay_max_contracts: float = Field(
+        default=120.0,
+        alias="DIRECTIONAL_OVERLAY_MAX_CONTRACTS",
+    )
+    directional_overlay_min_contracts: float = Field(
+        default=1.0,
+        alias="DIRECTIONAL_OVERLAY_MIN_CONTRACTS",
+    )
+    directional_overlay_shrink_weight: float = Field(
+        default=0.28,
+        alias="DIRECTIONAL_OVERLAY_SHRINK_WEIGHT",
+        description="Blend weight on market mid inside predict_history_shrunk for overlay.",
+    )
+    directional_overlay_cash_floor: float = Field(
+        default=75.0,
+        alias="DIRECTIONAL_OVERLAY_CASH_FLOOR",
+        description="Minimum cash to leave after an overlay trade (safety reserve for arb).",
+    )
+
     # ── Storage (multi-agent: one SQLite file per trader process) ─────────
     arb_sqlite_path: str = Field(
         default="",

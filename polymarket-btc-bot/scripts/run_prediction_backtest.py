@@ -42,13 +42,9 @@ import aiohttp  # noqa: E402
 
 from agents.advisor_settings import AdvisorSettings  # noqa: E402
 from src.prediction.cases import EventCase, build_event_cases  # noqa: E402
+from src.prediction.evaluate import compute_prediction_metrics, split_cases_chronologically  # noqa: E402
 from src.prediction.metrics import brier_score, log_loss_binary  # noqa: E402
-from src.prediction.predictors import (  # noqa: E402
-    predict_history_shrunk,
-    predict_history_signal,
-    predict_news_keywords,
-    predict_news_llm,
-)
+from src.prediction.predictors import predict_history_signal, predict_news_llm  # noqa: E402
 
 
 def _parse_args() -> argparse.Namespace:
@@ -66,6 +62,12 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=0.28,
         help="Market blend weight for predict_history_shrunk (0=no shrink).",
+    )
+    p.add_argument(
+        "--train-fraction",
+        type=float,
+        default=None,
+        help="If set (e.g. 0.7), print train vs test metrics by event cutoff (chronological).",
     )
     return p.parse_args()
 
@@ -102,21 +104,38 @@ def main() -> int:
         print("No events loaded.")
         return 1
 
+    ev = compute_prediction_metrics(cases, shrink_weight=args.shrink_weight)
     ys = [c.resolved_yes for c in cases]
-    market_ps = [c.market_yes_price for c in cases]
-    h_ps = [predict_history_signal(c) for c in cases]
-    hs_ps = [predict_history_shrunk(c, market_weight=args.shrink_weight) for c in cases]
-    n_ps = [predict_news_keywords(c) for c in cases]
-    blend = [(h + n) / 2.0 for h, n in zip(h_ps, n_ps, strict=True)]
-    blend_s = [(hs + n) / 2.0 for hs, n in zip(hs_ps, n_ps, strict=True)]
+    metrics = ev["metrics"]
+    by_name = {m["name"]: m for m in metrics}
 
     print(f"Events: {len(cases)}")
-    _report("Baseline (market)", ys, market_ps)
-    _report("Historical (signal)", ys, h_ps)
-    _report("Historical (shrunk)", ys, hs_ps)
-    _report("News (keywords)", ys, n_ps)
-    _report("Blend (H+N)/2", ys, blend)
-    _report("Blend (Hs+N)/2", ys, blend_s)
+    for key, label in [
+        ("baseline_market", "Baseline (market)"),
+        ("historical_signal", "Historical (signal)"),
+        ("historical_shrunk", "Historical (shrunk)"),
+        ("news_keywords", "News (keywords)"),
+        ("blend_half", "Blend (H+N)/2"),
+        ("blend_shrunk_news", "Blend (Hs+N)/2"),
+    ]:
+        m = by_name[key]
+        print(f"{label:22}  Brier={m['brier']:.4f}  LogLoss={m['log_loss']:.4f}")
+
+    if args.train_fraction is not None and len(cases) >= 2:
+        tr, te = split_cases_chronologically(cases, float(args.train_fraction))
+        print(
+            f"\nTrain/test split: train={len(tr)} test={len(te)} (fraction={args.train_fraction})\n"
+        )
+        if tr:
+            tr_ev = compute_prediction_metrics(tr, shrink_weight=args.shrink_weight)
+            for m in tr_ev["metrics"]:
+                print(f"  TRAIN {m['name']:<18} Brier={m['brier']:.4f}  LogLoss={m['log_loss']:.4f}")
+        if te:
+            te_ev = compute_prediction_metrics(te, shrink_weight=args.shrink_weight)
+            for m in te_ev["metrics"]:
+                print(f"  TEST {m['name']:<18} Brier={m['brier']:.4f}  LogLoss={m['log_loss']:.4f}")
+
+    h_ps = [predict_history_signal(c) for c in cases]
 
     if args.news_llm:
         asyncio.run(_run_llm_block(cases, ys, h_ps))

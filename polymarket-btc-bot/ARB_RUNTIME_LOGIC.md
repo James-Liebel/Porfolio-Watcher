@@ -131,6 +131,20 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 
 ---
 
-## 8. Changing this document
+## 8. Measurement, replay, prediction backtest, overlay
+
+**Paper arb stats (SQLite)** — `scripts/arb_session_report.py` rolls up `arb_opportunities`, `arb_fills`, `arb_settlements`, `arb_baskets`, and `arb_runtime_state` by UTC day. Use `--db` or `ARB_SQLITE_PATH` for multi-agent DB files. This answers “how many edges, fills, and settlement PnL” without a separate analytics DB.
+
+**Session recording & replay** — `scripts/record_arb_session.py` (optional `--write-meta`) and `scripts/replay_arb_session.py` verify deterministic replay. `scripts/run_historical_replay_suite.py --strict` batches JSONL files; committed fixtures live under `tests/fixtures/replay/`. `scripts/rigorous_backtest.py` records live cycles plus optional replay verification.
+
+**Real-data directional evaluation** — `scripts/fetch_real_prediction_backtest.py` pulls closed Polymarket markets + CLOB/RSS/CoinGecko; use `--contested-only` for a less trivial YES-price band. `--train-fraction 0.7` adds a **chronological** train/test metric block in `report.json` (earlier cutoffs = train, later = test).
+
+**Offline prediction CLI** — `scripts/run_prediction_backtest.py` on three JSONL files; `--train-fraction` matches the fetcher. Shared metrics live in `src/prediction/evaluate.py`.
+
+**Second sleeve (optional)** — `ENABLE_DIRECTIONAL_OVERLAY` runs the news + momentum overlay after structural arb in the same process (see `src/alpha/overlay.py` and `.env.example`). It does not replace arb scanning.
+
+---
+
+## 9. Changing this document
 
 When you change behavior in code, update the relevant **section and table** here so future tuning stays one jump away from the implementation.

@@ -183,6 +183,17 @@ class ArbEngine:
                     executed += 1
                     self._risk.record_execution(opportunity)
 
+            from ..alpha.overlay import run_directional_overlay
+
+            await run_directional_overlay(
+                self,
+                events,
+                books,
+                real_books,
+                len(opportunities),
+                executed,
+            )
+
             await self._repository.replace_positions(self._exchange.get_positions())
             await self._persist_runtime_state()
             self._last_cycle_at = utc_now()

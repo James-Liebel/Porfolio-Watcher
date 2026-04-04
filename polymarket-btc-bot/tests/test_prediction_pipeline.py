@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from src.prediction.cases import EventCase, build_event_cases
+from src.prediction.evaluate import compute_prediction_metrics, split_cases_chronologically
 from src.prediction.metrics import brier_score, log_loss_binary
 from src.prediction.predictors import (
     _parse_prob_from_llm,
@@ -90,6 +91,29 @@ def test_predict_history_shrunk_moves_toward_market():
     raw = predict_history_signal(c)
     sh = predict_history_shrunk(c, market_weight=0.5)
     assert abs(sh - 0.6) < abs(raw - 0.6)
+
+
+def test_split_cases_chronologically():
+    t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    t1 = datetime(2024, 2, 1, tzinfo=timezone.utc)
+    t2 = datetime(2024, 3, 1, tzinfo=timezone.utc)
+    cases = [
+        EventCase("c", "t", t2, True, 0.5, (), ()),
+        EventCase("a", "t", t0, False, 0.5, (), ()),
+        EventCase("b", "t", t1, True, 0.5, (), ()),
+    ]
+    tr, te = split_cases_chronologically(cases, 0.7)
+    assert [c.event_id for c in tr] == ["a", "b"]
+    assert [c.event_id for c in te] == ["c"]
+
+
+def test_compute_prediction_metrics_runs_on_fixtures():
+    cases = build_event_cases(_FIX / "events.jsonl", _FIX / "news.jsonl", _FIX / "history.jsonl")
+    out = compute_prediction_metrics(cases, shrink_weight=0.28)
+    assert out["n"] == 3
+    assert len(out["metrics"]) == 6
+    names = {m["name"] for m in out["metrics"]}
+    assert "baseline_market" in names
 
 
 def test_news_negation_lowers_vs_positive_wording():

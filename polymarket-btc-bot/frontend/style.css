@@ -143,23 +143,34 @@ body {
   50%       { opacity: 0.5; transform: scale(0.8); }
 }
 
-/* Bankroll & PnL display */
-.bankroll-display, .pnl-display {
+/* Header balances (cash / equity / contributed / PnL) */
+.header-financials {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 14px 20px;
+  justify-content: flex-end;
+}
+.fin-col {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  min-width: 4.5rem;
 }
-.bankroll-label, .pnl-label {
+.fin-label {
   font-size: 0.65rem;
   font-weight: 500;
   color: var(--text-muted);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.bankroll-amount {
-  font-size: 1.1rem;
+.fin-value {
+  font-size: 1.05rem;
   font-weight: 700;
   font-family: 'JetBrains Mono', monospace;
+  color: var(--text-primary);
+}
+.fin-value-primary {
   color: var(--accent-blue);
 }
 .pnl-amount {
@@ -430,6 +441,11 @@ body {
 /* Side badges */
 .side-yes { color: var(--accent-green); font-weight: 600; }
 .side-no  { color: var(--accent-red);   font-weight: 600; }
+.side-buy  { color: var(--accent-green); font-weight: 600; }
+.side-sell { color: var(--accent-yellow); font-weight: 600; }
+.contract-yes { color: var(--accent-green); font-weight: 600; }
+.contract-no  { color: var(--accent-red); font-weight: 600; }
+.contract-unknown { color: var(--text-secondary); font-weight: 500; }
 
 /* ── Modal ───────────────────────────────────────────────────────────────── */
 .modal-overlay {
@@ -617,6 +633,62 @@ body {
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
+
+/* ── Cycle progress (book fetch % vs indeterminate evaluate phase) ───────── */
+.cycle-progress-container {
+  margin-bottom: 8px;
+}
+.cycle-progress-container .progress-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+.progress-bar-outer {
+  height: 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.progress-bar-inner {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple));
+  width: 0%;
+  transition: width 0.25s ease;
+}
+.progress-bar-inner.progress-bar-indeterminate {
+  width: 35% !important;
+  animation: progress-indet 1.1s ease-in-out infinite;
+  opacity: 0.85;
+}
+@keyframes progress-indet {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(280%);
+  }
+}
+
+/* Split iframe: trim duplicate chrome */
+body.embed-split .embed-hide-when-split {
+  display: none !important;
+}
+body.embed-split .header-financials {
+  gap: 10px 14px;
+}
+body.embed-split .fin-value {
+  font-size: 0.95rem;
+}
+body.embed-split .stats-row {
+  gap: 10px;
+}
+body.embed-split .stat-card {
+  padding: 12px 14px;
+}
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {

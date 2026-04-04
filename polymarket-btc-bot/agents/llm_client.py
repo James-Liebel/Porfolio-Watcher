@@ -33,6 +33,8 @@ async def _ollama_chat(
         "model": settings.ollama_model,
         "messages": messages,
         "stream": False,
+        # Cap generation so advisor briefs return faster on local Ollama.
+        "options": {"num_predict": 512, "temperature": 0.3},
     }
     timeout = aiohttp.ClientTimeout(total=settings.advisor_http_timeout)
     async with session.post(url, json=payload, timeout=timeout) as resp:

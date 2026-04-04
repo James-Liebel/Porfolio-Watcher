@@ -70,8 +70,8 @@ class ArbEngine:
         self._cycle_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._initialized = False
-        self._current_cycle_pct = 0.0
-        self._current_cycle_step = ""
+        self._current_cycle_pct: float | None = 0.0
+        self._current_cycle_step = "idle"
 
     @property
     def risk(self) -> ArbRiskManager:
@@ -146,8 +146,10 @@ class ArbEngine:
                 self._current_cycle_pct = pct
 
             books = await self._market_data.refresh(events, on_progress=_on_progress)
-            self._current_cycle_step = "scanning"
-            self._current_cycle_pct = 100.0
+            # Books are loaded; remaining work (diagnostics, scan, execute, overlay) has no
+            # meaningful 0–100% — avoid exposing "100% scanning" while this phase runs.
+            self._current_cycle_step = "evaluating"
+            self._current_cycle_pct = None
             # Strip synthetic books before scanning so false edges are never scored.
             real_books = {
                 token_id: book
@@ -241,7 +243,10 @@ class ArbEngine:
             if self._config.arb_log_cycle_diagnostics:
                 logger.info("arb_engine.cycle_diagnostics", **diagnostics)
             await self._append_paper_equity_snapshot()
+            self._current_cycle_step = "idle"
+            self._current_cycle_pct = 0.0
             return dict(self._last_cycle_summary)
+
 
     async def _append_paper_equity_snapshot(self) -> None:
         if not self._config.paper_trade or not self._config.paper_equity_snapshot_log:
@@ -475,7 +480,11 @@ class ArbEngine:
                 "directional_overlay_enabled": bool(self._config.enable_directional_overlay),
                 "directional_overlay_llm_news": bool(self._config.directional_overlay_llm_news),
                 "max_tracked_events_config": int(self._config.max_tracked_events),
-                "cycle_progress_pct": round(self._current_cycle_pct, 1),
+                "cycle_progress_pct": (
+                    None
+                    if self._current_cycle_pct is None
+                    else round(float(self._current_cycle_pct), 1)
+                ),
                 "cycle_step": self._current_cycle_step,
             }
         )

@@ -639,7 +639,20 @@ class ArbRepository:
         return await self._fetch_all("SELECT * FROM arb_opportunities ORDER BY created_at DESC LIMIT ?", (limit,))
 
     async def list_orders(self, limit: int = 100) -> list[dict[str, Any]]:
-        return await self._fetch_all("SELECT * FROM arb_orders ORDER BY updated_at DESC LIMIT ?", (limit,))
+        rows = await self._fetch_all("SELECT * FROM arb_orders ORDER BY updated_at DESC LIMIT ?", (limit,))
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            merged = dict(row)
+            raw = row.get("payload_json")
+            if raw:
+                try:
+                    payload = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    payload = None
+                if isinstance(payload, dict):
+                    merged.update(payload)
+            result.append(merged)
+        return result
 
     async def list_positions(self) -> list[dict[str, Any]]:
         return await self._fetch_all("SELECT * FROM arb_positions ORDER BY event_id, market_id")

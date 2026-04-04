@@ -77,7 +77,7 @@ def build_user_prompt(a: dict[str, Any], b: dict[str, Any]) -> str:
         "(3) whether edges vs floors explain few opportunities, (4) one **safe** tuning idea "
         "(env vars like MIN_*_EDGE_BPS, MAX_TRACKED_EVENTS, CLOB_BOOK_FETCH_CONCURRENCY — no trade commands).\n"
         "Keep under 220 words total.\n\n"
-        f"```json\n{json.dumps({'agent_a': a, 'agent_b': b}, indent=2, default=str)}\n```"
+        f"```json\n{json.dumps({'agent_a': a, 'agent_b': b}, separators=(',', ':'), default=str)}\n```"
     )
 
 

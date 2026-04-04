@@ -294,8 +294,12 @@ class ReplayMarketDataService:
     def __init__(self, universe: ReplayUniverseService) -> None:
         self._universe = universe
 
-    async def refresh(self, events: list[ArbEvent]) -> dict[str, TokenBook]:
+    async def refresh(
+        self, events: list[ArbEvent], on_progress: Any | None = None
+    ) -> dict[str, TokenBook]:
         del events
+        if on_progress:
+            on_progress(100.0)
         raw_books = self._universe.current_record.get("books", {})
         return {
             token_id: decode_book(token_id, raw)

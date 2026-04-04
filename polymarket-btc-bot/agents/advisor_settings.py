@@ -34,7 +34,11 @@ class AdvisorSettings(BaseSettings):
     advisor_host: str = Field(default="127.0.0.1", alias="ADVISOR_HOST")
     advisor_port: int = Field(default=8780, alias="ADVISOR_PORT")
     advice_cache_seconds: int = Field(default=90, alias="ADVICE_CACHE_SECONDS")
-    advisor_http_timeout: float = Field(default=120.0, alias="ADVISOR_HTTP_TIMEOUT")
+    advisor_http_timeout: float = Field(
+        default=240.0,
+        alias="ADVISOR_HTTP_TIMEOUT",
+        description="Per-request timeout (agent /summary fetches + LLM). Ollama on CPU may need 180s+.",
+    )
 
     agent_a_port: int = Field(default=8765, alias="AGENT_A_PORT")
     agent_b_port: int = Field(default=8767, alias="AGENT_B_PORT")

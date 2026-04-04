@@ -84,7 +84,16 @@ class ArbControlAPI:
         return await handler(request)
 
     async def _health(self, request: web.Request) -> web.Response:
-        return _json({"status": "ok", **self._engine.summary()})
+        s = self._engine.summary()
+        return _json(
+            {
+                "status": "ok",
+                "paper_trade": s.get("paper_trade"),
+                "agent_display_name": s.get("agent_display_name") or "",
+                "control_api_port": s.get("control_api_port"),
+                "trading_halted": s.get("trading_halted"),
+            }
+        )
 
     async def _summary(self, request: web.Request) -> web.Response:
         return _json(self._engine.summary())

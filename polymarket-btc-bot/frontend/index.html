@@ -25,16 +25,31 @@
       </div>
     </div>
     <div class="top-bar-right">
-      <div class="bankroll-display">
-        <span class="bankroll-label">Equity</span>
-        <span id="bankroll" class="bankroll-amount">—</span>
-      </div>
-      <div class="pnl-display">
-        <span class="pnl-label">Realized P&amp;L</span>
-        <span id="daily-pnl" class="pnl-amount">—</span>
+      <div class="header-financials" aria-label="Paper exchange balances">
+        <div class="fin-col">
+          <span class="fin-label">Cash</span>
+          <span id="hdr-cash" class="fin-value">—</span>
+        </div>
+        <div class="fin-col">
+          <span class="fin-label">Equity</span>
+          <span id="bankroll" class="fin-value fin-value-primary">—</span>
+        </div>
+        <div class="fin-col">
+          <span class="fin-label">Contributed</span>
+          <span id="hdr-contributed" class="fin-value">—</span>
+        </div>
+        <div class="fin-col">
+          <span class="fin-label">Realized P&amp;L</span>
+          <span id="daily-pnl" class="fin-value pnl-amount">—</span>
+        </div>
       </div>
       <div class="header-actions">
-        <a href="agents-split.html" class="dual-dash-link" title="Two paper traders on ports 8765 + 8767 — run scripts/start_paper_split.py">Split · 2 agents</a>
+        <a
+          href="agents-split.html"
+          class="dual-dash-link embed-hide-when-split"
+          data-split-right-port="8767"
+          title="Two paper traders — override right port via data-split-right-port or window.__SPLIT_RIGHT_PORT__"
+          >Split · 2 agents</a>
         <button id="btn-add-money" class="btn btn-primary" onclick="openAddMoneyModal()">＋ Add Money</button>
         <button id="btn-halt" class="btn btn-danger" onclick="haltAll()">⏹ Halt</button>
         <button id="btn-resume" class="btn btn-success" onclick="resumeAll()">▶ Resume</button>
@@ -48,43 +63,43 @@
       <div class="stat-card">
         <div class="stat-icon">🔎</div>
         <div class="stat-body">
-          <div class="stat-label">Opportunities (last scan)</div>
-          <div id="stat-trades" class="stat-value">—</div>
+          <div class="stat-label">Opportunities (last cycle)</div>
+          <div id="stat-opportunities-last-cycle" class="stat-value">—</div>
         </div>
       </div>
       <div class="stat-card">
         <div class="stat-icon">✓</div>
         <div class="stat-body">
           <div class="stat-label">Executed (session)</div>
-          <div id="stat-wins" class="stat-value">—</div>
+          <div id="stat-executed-session" class="stat-value">—</div>
         </div>
       </div>
       <div class="stat-card">
         <div class="stat-icon">⊘</div>
         <div class="stat-body">
           <div class="stat-label">Rejected (session)</div>
-          <div id="stat-losses" class="stat-value">—</div>
+          <div id="stat-rejected-session" class="stat-value">—</div>
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon">◎</div>
+        <div class="stat-icon">📚</div>
         <div class="stat-body">
-          <div class="stat-label">Opps (last cycle)</div>
-          <div id="stat-winrate" class="stat-value">—</div>
+          <div class="stat-label">Synthetic books (last cycle)</div>
+          <div id="stat-books-synthetic" class="stat-value">—</div>
         </div>
       </div>
       <div class="stat-card">
         <div class="stat-icon">🧺</div>
         <div class="stat-body">
           <div class="stat-label">Open baskets</div>
-          <div id="stat-open" class="stat-value">—</div>
+          <div id="stat-open-baskets" class="stat-value">—</div>
         </div>
       </div>
       <div class="stat-card">
         <div class="stat-icon">📍</div>
         <div class="stat-body">
           <div class="stat-label">Open positions</div>
-          <div id="stat-notfilled" class="stat-value">—</div>
+          <div id="stat-open-positions" class="stat-value">—</div>
         </div>
       </div>
     </section>
@@ -146,7 +161,8 @@
             <tr>
               <th>Time</th>
               <th>Market</th>
-              <th>Side</th>
+              <th>Buy/Sell</th>
+              <th>Outcome</th>
               <th>Size</th>
               <th>Price</th>
               <th>Route</th>
@@ -155,13 +171,13 @@
             </tr>
           </thead>
           <tbody id="orders-body">
-            <tr><td colspan="8" class="empty-state">Waiting for data…</td></tr>
+            <tr><td colspan="9" class="empty-state">Waiting for data…</td></tr>
           </tbody>
         </table>
       </div>
     </section>
 
-    <section class="section">
+    <section class="section embed-hide-when-split">
       <h2 class="section-title">Deposit history</h2>
       <div class="table-wrapper">
         <table class="trades-table" id="deposits-table">

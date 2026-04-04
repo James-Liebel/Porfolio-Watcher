@@ -74,7 +74,7 @@ async def handle_advice(request: web.Request) -> web.Response:
         out["cached"] = True
         return web.json_response(out)
 
-    timeout = min(120.0, settings.advisor_http_timeout)
+    timeout = float(settings.advisor_http_timeout)
     async with aiohttp.ClientSession() as session:
         a_ctx = await fetch_agent_context(
             session, "127.0.0.1", settings.agent_a_port, "Agent A", timeout

@@ -31,6 +31,22 @@ body {
   color: #8b9abb;
   line-height: 1.45;
 }
+.split-hint-short {
+  margin: 0 0 4px;
+}
+.split-details {
+  margin-top: 2px;
+  font-size: 0.78rem;
+  color: #8b9abb;
+}
+.split-details summary {
+  cursor: pointer;
+  color: #6b7893;
+  user-select: none;
+}
+.split-details .hint {
+  margin-top: 8px;
+}
 .split-top a {
   color: #4f8ef7;
 }
@@ -143,6 +159,17 @@ body {
 .advice-hint code {
   font-size: 0.78rem;
   color: #9b72ff;
+}
+.advice-raw {
+  margin-top: 10px;
+}
+.advice-raw summary {
+  cursor: pointer;
+  color: #6b7893;
+  font-size: 0.78rem;
+}
+.advice-status.advice-error {
+  color: #f75f5f;
 }
 
 @media (max-width: 900px) {

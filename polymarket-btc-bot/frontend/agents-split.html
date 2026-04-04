@@ -13,18 +13,18 @@
 <body>
   <header class="split-top">
     <h1>PolyArb · arbitrage vs Ollama overlay</h1>
-    <p class="hint">
-      This page embeds <strong>two control APIs</strong> (two <code>python -m src</code> processes), each with its own
-      <code>CONTROL_API_PORT</code> and <code>ARB_SQLITE_PATH</code>. Default layout: <strong>8765</strong> = structural
-      arbitrage only; <strong>8767</strong> = same arb scanner plus optional <strong>Ollama news</strong> directional overlay
-      when no arb trades fire. Labels: <code>?l1=Arbitrage&amp;l2=Ollama%20overlay</code>.
-      Use <strong><code>http://127.0.0.1:8765/ui/agents-split.html</code></strong> (served by the bot) — not a <code>file://</code> path, or iframes often stay blank.
-      One-shot: <code>python scripts/start_paper_split.py</code> (resets DBs, two agents + advisor on <strong>8780</strong>).
-      Other ports: <code>?left=8778&amp;right=8767</code> or <code>?ports=8778,8767</code>.
-      Official LLM toolkit:
-      <a href="https://github.com/Polymarket/agents" target="_blank" rel="noopener noreferrer">Polymarket/agents</a>
-      — this repo runs the structural-arb engine only.
+    <p class="hint split-hint-short">
+      Two bots side by side (<strong>8765</strong> = arb only, <strong>8767</strong> = arb + Ollama overlay). Serve this page from the bot
+      (<code>/ui/agents-split.html</code>), not <code>file://</code>. Quick start: <code>python scripts/start_paper_split.py</code>.
     </p>
+    <details class="split-details">
+      <summary>Ports, labels &amp; references</summary>
+      <p class="hint">
+        Query <code>?l1=…&amp;l2=…</code>, <code>?left=</code>/<code>?right=</code>, or <code>?ports=a,b</code>.
+        Advisor on <strong>8780</strong>. Polymarket tooling:
+        <a href="https://github.com/Polymarket/agents" target="_blank" rel="noopener noreferrer">Polymarket/agents</a>.
+      </p>
+    </details>
   </header>
   <div class="split-grid">
     <div class="pane">
@@ -67,11 +67,12 @@
       }
       var l1 = paneLabel(1, lp, q.get("l1"));
       var l2 = paneLabel(2, rp, q.get("l2"));
+      var embedQ = "?embed=split";
       document.querySelectorAll("[data-split-frame=\"1\"]").forEach(function (el) {
-        el.src = base + lp + "/ui/index.html";
+        el.src = base + lp + "/ui/index.html" + embedQ;
       });
       document.querySelectorAll("[data-split-frame=\"2\"]").forEach(function (el) {
-        el.src = base + rp + "/ui/index.html";
+        el.src = base + rp + "/ui/index.html" + embedQ;
       });
       document.querySelectorAll("[data-split-title=\"1\"]").forEach(function (el) {
         el.textContent = l1 + " · " + host + ":" + lp;

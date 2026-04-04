@@ -239,6 +239,7 @@ class OrderRecord:
     average_price: float = 0.0
     fees_enabled: bool = False
     reason: str = ""
+    contract_side: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -248,6 +249,7 @@ class OrderRecord:
             "opportunity_id": self.opportunity_id,
             "token_id": self.token_id,
             "market_id": self.market_id,
+            "contract_side": self.contract_side,
             "side": self.side,
             "price": self.price,
             "size": self.size,

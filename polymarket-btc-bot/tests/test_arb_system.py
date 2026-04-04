@@ -130,8 +130,10 @@ class StaticMarketData:
     def __init__(self, books):
         self._books = books
 
-    async def refresh(self, events):
+    async def refresh(self, events, on_progress=None):
         del events
+        if on_progress:
+            on_progress(100.0)
         return self._books
 
 

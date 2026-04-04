@@ -14,13 +14,25 @@ let refreshCountdown = POLL_INTERVAL / 1000;
 let countdownTimer = null;
 let pollTimer = null;
 
+const EMBED_SPLIT =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("embed") === "split";
+
 document.addEventListener("DOMContentLoaded", () => {
+  if (EMBED_SPLIT) {
+    document.body.classList.add("embed-split");
+  }
   const dual = document.querySelector("a.dual-dash-link");
   if (dual && window.location.port) {
+    const rp =
+      (typeof window.__SPLIT_RIGHT_PORT__ !== "undefined" && window.__SPLIT_RIGHT_PORT__) ||
+      dual.getAttribute("data-split-right-port") ||
+      "8767";
     dual.href =
       "agents-split.html?left=" +
       encodeURIComponent(window.location.port) +
-      "&right=8767";
+      "&right=" +
+      encodeURIComponent(String(rp).trim());
   }
   poll();
   startCountdown();
@@ -28,8 +40,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 async function poll() {
   try {
-    const [health, summary, orders, baskets, deposits] = await Promise.all([
-      fetchJSON("/health"),
+    const [summary, orders, baskets, deposits] = await Promise.all([
       fetchJSON("/summary"),
       fetchJSON("/orders?limit=30"),
       fetchJSON("/baskets?limit=20"),
@@ -38,7 +49,7 @@ async function poll() {
 
     const events = await fetchJSON("/events").catch(() => []);
 
-    renderHeader(health, summary);
+    renderHeader(summary);
     renderStatCards(summary);
     renderProgress(summary);
     renderDiagnostics(summary);
@@ -61,10 +72,10 @@ async function fetchJSON(path) {
   return res.json();
 }
 
-function renderHeader(health, summary) {
+function renderHeader(summary) {
   const agentEl = document.getElementById("agent-label");
   if (agentEl) {
-    const an = String(health.agent_display_name || "").trim();
+    const an = String(summary.agent_display_name || "").trim();
     if (an) {
       agentEl.textContent = an;
       agentEl.classList.remove("hidden");
@@ -75,7 +86,7 @@ function renderHeader(health, summary) {
   }
 
   const badge = document.getElementById("mode-badge");
-  if (health.paper_trade) {
+  if (summary.paper_trade) {
     badge.textContent = "PAPER";
     badge.className = "badge badge-paper";
   } else {
@@ -93,12 +104,16 @@ function renderHeader(health, summary) {
     label.textContent = "Running";
   }
 
-  document.getElementById("bankroll").textContent = formatUSD(summary.equity);
+  setText("hdr-cash", formatUSD(summary.cash));
+  setText("bankroll", formatUSD(summary.equity));
+  setText("hdr-contributed", formatUSD(summary.contributed_capital));
 
   const pnlEl = document.getElementById("daily-pnl");
   const rp = summary.realized_pnl;
-  pnlEl.textContent = formatPnL(rp);
-  pnlEl.className = "pnl-amount " + pnlClass(rp);
+  if (pnlEl) {
+    pnlEl.textContent = formatPnL(rp);
+    pnlEl.className = "fin-value pnl-amount " + pnlClass(rp);
+  }
 }
 
 function setOfflineState() {
@@ -106,25 +121,42 @@ function setOfflineState() {
   const label = document.getElementById("status-label");
   pill.className = "status-pill status-connecting";
   label.textContent = "Bot offline";
-  document.getElementById("bankroll").textContent = "—";
-  document.getElementById("daily-pnl").textContent = "—";
+  setText("hdr-cash", "—");
+  setText("bankroll", "—");
+  setText("hdr-contributed", "—");
+  const pnlEl = document.getElementById("daily-pnl");
+  if (pnlEl) {
+    pnlEl.textContent = "—";
+    pnlEl.className = "fin-value pnl-amount val-neutral";
+  }
 }
 
 function renderStatCards(s) {
-  setText("stat-trades", s.latest_opportunities ?? "—");
-  setText("stat-wins", s.executed_count ?? "—");
-  setText("stat-losses", s.rejected_count ?? "—");
-  const lc = s.last_cycle && s.last_cycle.opportunities != null ? s.last_cycle.opportunities : "—";
-  setText("stat-winrate", lc);
-  setText("stat-open", s.open_baskets ?? "—");
-  setText("stat-notfilled", s.open_positions ?? "—");
+  const lcOp =
+    s.last_cycle && s.last_cycle.opportunities != null ? s.last_cycle.opportunities : "—";
+  setText("stat-opportunities-last-cycle", lcOp);
+  setText("stat-executed-session", s.executed_count ?? "—");
+  setText("stat-rejected-session", s.rejected_count ?? "—");
+  const syn =
+    s.last_cycle && s.last_cycle.books_synthetic != null ? s.last_cycle.books_synthetic : "—";
+  setText("stat-books-synthetic", syn);
+  setText("stat-open-baskets", s.open_baskets ?? "—");
+  setText("stat-open-positions", s.open_positions ?? "—");
 }
 
 function renderDiagnostics(s) {
   const el = document.getElementById("diag-panel");
   if (!el) return;
   const d = s.last_cycle && s.last_cycle.diagnostics;
+  const step = String(s.cycle_step || "").toLowerCase();
+  const busy =
+    step === "fetching_books" || step === "evaluating" || step === "scanning";
   if (!d || typeof d !== "object") {
+    if (busy) {
+      el.innerHTML =
+        '<p class="empty-inline">Scanner diagnostics fill in when this cycle completes (books fetched → scan → risk → execution).</p>';
+      return;
+    }
     el.innerHTML = '<p class="empty-inline">No diagnostics yet (wait for one engine cycle).</p>';
     return;
   }
@@ -153,16 +185,44 @@ function renderProgress(s) {
   const pctLabel = document.getElementById("progress-pct-label");
   const bar = document.getElementById("progress-bar-inner");
 
-  if (!s || s.cycle_progress_pct == null) {
+  const stepRaw = String(s && s.cycle_step != null ? s.cycle_step : "").toLowerCase();
+  const isIdle =
+    !s || stepRaw === "" || stepRaw === "idle" || stepRaw === "waiting_next_poll";
+
+  if (isIdle) {
     if (container) container.classList.add("hidden");
+    if (bar) bar.classList.remove("progress-bar-indeterminate");
     return;
   }
 
   if (container) container.classList.remove("hidden");
-  
-  const pct = Number(s.cycle_progress_pct || 0);
-  const step = String(s.cycle_step || "active").replace(/_/g, " ");
 
+  const pctVal = s.cycle_progress_pct;
+  const indeterminate =
+    stepRaw === "evaluating" ||
+    stepRaw === "scanning" ||
+    pctVal === null ||
+    pctVal === undefined ||
+    Number.isNaN(Number(pctVal));
+
+  if (indeterminate) {
+    if (stepLabel) {
+      stepLabel.textContent =
+        stepRaw === "fetching_books"
+          ? "Fetching Polymarket order books…"
+          : "Running scanner, risk checks, execution, and settlement…";
+    }
+    if (pctLabel) pctLabel.textContent = "…";
+    if (bar) {
+      bar.style.width = "100%";
+      bar.classList.add("progress-bar-indeterminate");
+    }
+    return;
+  }
+
+  if (bar) bar.classList.remove("progress-bar-indeterminate");
+  const pct = Number(pctVal);
+  const step = String(s.cycle_step || "active").replace(/_/g, " ");
   if (stepLabel) stepLabel.textContent = "Current task: " + step.charAt(0).toUpperCase() + step.slice(1) + "…";
   if (pctLabel) pctLabel.textContent = pct + "%";
   if (bar) bar.style.width = pct + "%";
@@ -172,7 +232,8 @@ function renderProgress(s) {
 function renderEventsList(events) {
   const el = document.getElementById("events-list");
   if (!el) return;
-  const slice = events.slice(0, 14);
+  const maxEv = EMBED_SPLIT ? 6 : 14;
+  const slice = events.slice(0, maxEv);
   if (!slice.length) {
     el.innerHTML = '<p class="empty-inline">No events loaded yet (waiting for a cycle).</p>';
     return;
@@ -214,24 +275,45 @@ function renderBasketsTable(rows) {
     .join("");
 }
 
+function orderRouteClass(side) {
+  const u = String(side || "").toUpperCase();
+  if (u === "BUY") return "side-buy";
+  if (u === "SELL") return "side-sell";
+  return "";
+}
+
+function orderContractClass(cs) {
+  const u = String(cs || "").toUpperCase();
+  if (u === "YES") return "contract-yes";
+  if (u === "NO") return "contract-no";
+  return "contract-unknown";
+}
+
 function renderOrdersTable(orders) {
   const tbody = document.getElementById("orders-body");
+  if (!tbody) return;
   if (!orders || orders.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" class="empty-state">No orders recorded yet.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="empty-state">No orders recorded yet.</td></tr>`;
     return;
   }
 
   tbody.innerHTML = orders
     .map((o) => {
       const st = escHtml(o.status || "—");
+      const leg = String(o.side || "").toUpperCase();
+      const routeCls = orderRouteClass(o.side);
+      const cs = (o.contract_side != null && String(o.contract_side).trim() !== "")
+        ? String(o.contract_side).toUpperCase()
+        : "";
+      const outDisp = cs || "—";
+      const outCls = orderContractClass(cs);
       return `<tr>
         <td>${formatTime(o.updated_at || o.created_at)}</td>
         <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;" title="${escHtml(
           o.market_id || ""
         )}">${escHtml(o.market_id || "—")}</td>
-        <td class="${String(o.side).toUpperCase() === "YES" ? "side-yes" : "side-no"}">${escHtml(
-          String(o.side || "").toUpperCase()
-        )}</td>
+        <td class="${routeCls}">${escHtml(leg || "—")}</td>
+        <td class="${outCls}">${escHtml(outDisp)}</td>
         <td>${formatNum(o.size)}</td>
         <td>${formatNum(o.price, 4)}</td>
         <td>${escHtml(o.maker_or_taker || "—")}</td>

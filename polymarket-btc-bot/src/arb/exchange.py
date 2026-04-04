@@ -159,6 +159,7 @@ class PaperExchange:
             created_at=now,
             updated_at=now,
             fees_enabled=intent.fees_enabled,
+            contract_side=intent.contract_side,
             metadata=dict(intent.metadata),
         )
 

@@ -1,0 +1,3 @@
+{"event_id": "fixture-a", "time": "2024-05-31T09:00:00+00:00", "metric": "signal", "value": 0.5}
+{"event_id": "fixture-b", "time": "2024-06-01T10:00:00+00:00", "metric": "signal", "value": -0.5}
+{"event_id": "fixture-c", "time": "2024-06-02T11:00:00+00:00", "metric": "signal", "value": 1.0}

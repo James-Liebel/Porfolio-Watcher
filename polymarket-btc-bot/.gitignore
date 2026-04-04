@@ -26,6 +26,7 @@ data/*.db-wal
 data/*.db-shm
 data/replays/
 data/backtests/
+data/prediction_training/
 *.sql
 
 # Logs

@@ -1,0 +1,3 @@
+{"event_id": "fixture-a", "title": "Will proposal pass?", "cutoff_time": "2024-06-01T12:00:00+00:00", "resolved_yes": true, "market_yes_price": 0.45}
+{"event_id": "fixture-b", "title": "Will team win?", "cutoff_time": "2024-06-02T12:00:00+00:00", "resolved_yes": false, "market_yes_price": 0.55}
+{"event_id": "fixture-c", "title": "Will launch succeed?", "cutoff_time": "2024-06-03T12:00:00+00:00", "resolved_yes": true, "market_yes_price": 0.35}

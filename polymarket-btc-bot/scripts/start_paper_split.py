@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 Kill prior listeners on the control/advisor ports, wipe dual-agent SQLite files,
-start two isolated paper traders (structural arb + optional directional overlay),
-and open the split dashboard in your browser.
+start two isolated paper traders:
+  - Agent A (8765): structural arbitrage only ($100)
+  - Agent B (8767): structural arb + directional overlay with Ollama news ($100)
+Then start the LLM advisor (8780) and try `ollama serve` if needed.
 
 Usage (repo root):  python scripts/start_paper_split.py
 """
@@ -19,6 +21,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 OLLAMA_PORT = 11434
+
+# $100 bankroll sizing (matches scripts/run_two_structural_agents.py)
+_SHARED_ARB = {
+    "PAPER_TRADE": "true",
+    "CONTROL_API_TOKEN": "",
+    "INITIAL_BANKROLL": "100",
+    "PAPER_TAKER_FEE_BPS": "50",
+    "PAPER_SPREAD_PENALTY_BPS": "15",
+    "ARB_POLL_SECONDS": "25",
+    "MAX_BASKET_NOTIONAL": "20",
+    "MAX_EVENT_EXPOSURE_PCT": "0.12",
+    "MAX_TOTAL_OPEN_BASKETS": "2",
+    "MAX_OPPORTUNITIES_PER_CYCLE": "2",
+    "ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE": "15",
+    "MIN_COMPLETE_SET_EDGE_BPS": "18",
+    "MIN_NEG_RISK_EDGE_BPS": "28",
+    "ARB_MIN_EXPECTED_PROFIT_USD": "0.1",
+    # Wider universe scan (advisor tuning): more Gamma rows before CLOB book cap.
+    "MAX_TRACKED_EVENTS": "500",
+}
 
 
 def _win_kill_port(port: int) -> None:
@@ -100,45 +122,57 @@ def advisor_env(agent_a_port: int, agent_b_port: int) -> dict[str, str]:
     return e
 
 
-def agent_env(port: int, rel_db: str, name: str) -> dict[str, str]:
+def _ollama_llm_env() -> dict[str, str]:
+    """Env for trading process that calls predict_news_llm (overlay sleeve)."""
+    return {
+        "LLM_PROVIDER": "ollama",
+        "OLLAMA_BASE_URL": os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+        "OLLAMA_MODEL": os.environ.get("OLLAMA_MODEL", "llama3.2"),
+    }
+
+
+def arb_only_env(port: int, rel_db: str, name: str) -> dict[str, str]:
     e = os.environ.copy()
     db_path = (ROOT / rel_db).resolve()
+    e.update(_SHARED_ARB)
     e.update(
         {
             "CONTROL_API_PORT": str(port),
             "ARB_SQLITE_PATH": str(db_path),
             "AGENT_DISPLAY_NAME": name,
-            # So browser + advisor can call /summary without X-Control-Token (local UI).
-            "CONTROL_API_TOKEN": "",
-            "PAPER_TRADE": "true",
-            "INITIAL_BANKROLL": "300",
-            "PAPER_TAKER_FEE_BPS": "50",
-            "PAPER_SPREAD_PENALTY_BPS": "15",
-            "ARB_POLL_SECONDS": "25",
-            "MAX_BASKET_NOTIONAL": "50",
-            "MAX_EVENT_EXPOSURE_PCT": "0.25",
-            "MAX_TOTAL_OPEN_BASKETS": "4",
-            "ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE": "0",
-            "MIN_COMPLETE_SET_EDGE_BPS": "18",
-            "MIN_NEG_RISK_EDGE_BPS": "28",
-            "ARB_MIN_EXPECTED_PROFIT_USD": "0.1",
-            # Second sleeve: paper YES buys when model edge vs ask is wide (activity when structural arbs are scarce).
+            "ENABLE_DIRECTIONAL_OVERLAY": "false",
+        }
+    )
+    return e
+
+
+def ollama_overlay_env(port: int, rel_db: str, name: str) -> dict[str, str]:
+    e = os.environ.copy()
+    db_path = (ROOT / rel_db).resolve()
+    e.update(_SHARED_ARB)
+    e.update(_ollama_llm_env())
+    e.update(
+        {
+            "CONTROL_API_PORT": str(port),
+            "ARB_SQLITE_PATH": str(db_path),
+            "AGENT_DISPLAY_NAME": name,
             "ENABLE_DIRECTIONAL_OVERLAY": "true",
+            "DIRECTIONAL_OVERLAY_LLM_NEWS": "true",
             "DIRECTIONAL_OVERLAY_EVERY_N_CYCLES": "2",
             "DIRECTIONAL_OVERLAY_ONLY_WHEN_NO_ARB": "true",
             "DIRECTIONAL_OVERLAY_MIN_EDGE": "0.06",
             "DIRECTIONAL_OVERLAY_MAX_SPREAD": "0.14",
-            "DIRECTIONAL_OVERLAY_MAX_NOTIONAL": "20",
-            "DIRECTIONAL_OVERLAY_CASH_FLOOR": "50",
+            "DIRECTIONAL_OVERLAY_MAX_NOTIONAL": "12",
+            "DIRECTIONAL_OVERLAY_CASH_FLOOR": "25",
         }
     )
     return e
 
 
 def main() -> int:
-    agents: list[tuple[int, str, str]] = [
-        (8765, "data/arb_agent_1.db", "Paper A"),
-        (8767, "data/arb_agent_2.db", "Paper B"),
+    agents: list[tuple[int, str, dict[str, str]]] = [
+        (8765, "data/arb_agent_1.db", arb_only_env(8765, "data/arb_agent_1.db", "Arbitrage (paper)")),
+        (8767, "data/arb_agent_2.db", ollama_overlay_env(8767, "data/arb_agent_2.db", "Ollama overlay (paper)")),
     ]
     kill_listen_ports([8765, 8767, 8778, 8780])
     time.sleep(1.5)
@@ -151,14 +185,15 @@ def main() -> int:
     if sys.platform == "win32":
         popen_kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
-    for port, rel, name in agents:
+    for port, rel, env in agents:
         subprocess.Popen(
             [sys.executable, "-m", "src"],
             cwd=str(ROOT),
-            env=agent_env(port, rel, name),
+            env=env,
             **popen_kw,
         )
-        print(f"Started {name!r} on port {port}  db={rel}")
+        label = env.get("AGENT_DISPLAY_NAME", rel)
+        print(f"Started {label!r} on port {port}  db={rel}")
 
     ensure_ollama_server(popen_kw)
     time.sleep(1.0)
@@ -176,7 +211,10 @@ def main() -> int:
     split_url = f"http://127.0.0.1:{agents[0][0]}/split"
     print()
     print(f"Open split UI: {split_url}")
-    print("Direct: http://127.0.0.1:8765/ui/agents-split.html?left=8765&right=8767")
+    print(
+        "Direct: http://127.0.0.1:8765/ui/agents-split.html?left=8765&right=8767"
+        "&l1=Arbitrage&l2=Ollama%20overlay"
+    )
     print("Advisor health: http://127.0.0.1:8780/health")
     time.sleep(5)
     try:

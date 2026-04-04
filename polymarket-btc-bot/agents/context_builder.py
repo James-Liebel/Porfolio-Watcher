@@ -13,10 +13,18 @@ def _compact_summary(summary: dict[str, Any] | None, label: str) -> dict[str, An
         return {"label": label, "error": "unreachable"}
     lc = summary.get("last_cycle") or {}
     diag = lc.get("diagnostics") or {}
+    display = (summary.get("agent_display_name") or "").strip()
+    use_label = display or label
     return {
-        "label": label,
+        "label": use_label,
+        "cash": summary.get("cash"),
+        "available_cash": summary.get("available_cash"),
+        "contributed_capital": summary.get("contributed_capital"),
         "equity": summary.get("equity"),
         "realized_pnl": summary.get("realized_pnl"),
+        "directional_overlay_enabled": summary.get("directional_overlay_enabled"),
+        "directional_overlay_llm_news": summary.get("directional_overlay_llm_news"),
+        "max_tracked_events_config": summary.get("max_tracked_events_config"),
         "trading_halted": summary.get("trading_halted"),
         "halt_reason": summary.get("halt_reason"),
         "tracked_events": summary.get("tracked_events"),
@@ -60,11 +68,13 @@ async def fetch_agent_context(
 
 def build_user_prompt(a: dict[str, Any], b: dict[str, Any]) -> str:
     return (
-        "Here is JSON for two isolated Polymarket **paper** structural-arbitrage bots "
-        "(complete-set + neg-risk scanning, not directional punting). "
+        "Here is JSON for two isolated Polymarket **paper** traders "
+        "(structural complete-set + neg-risk scanning; one side may also run a capped news/LLM overlay). "
         "Respond in **Markdown** with clear sections ### Agent A and ### Agent B.\n"
-        "For each: (1) two-sentence health read, (2) data-quality note (CLOB vs synthetic books), "
-        "(3) whether edges vs floors explain zero opportunities, (4) one **safe** tuning idea "
+        "For each: (1) two-sentence health read using **cash**, **equity**, **contributed_capital** "
+        "(do not claim $0 equity if cash/equity fields are non-null and positive), "
+        "(2) data-quality note from last_cycle books_clob vs books_synthetic, "
+        "(3) whether edges vs floors explain few opportunities, (4) one **safe** tuning idea "
         "(env vars like MIN_*_EDGE_BPS, MAX_TRACKED_EVENTS, CLOB_BOOK_FETCH_CONCURRENCY — no trade commands).\n"
         "Keep under 220 words total.\n\n"
         f"```json\n{json.dumps({'agent_a': a, 'agent_b': b}, indent=2, default=str)}\n```"

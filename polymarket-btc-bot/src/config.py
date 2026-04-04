@@ -258,6 +258,14 @@ class Settings(BaseSettings):
         alias="DIRECTIONAL_OVERLAY_CASH_FLOOR",
         description="Minimum cash to leave after an overlay trade (safety reserve for arb).",
     )
+    directional_overlay_llm_news: bool = Field(
+        default=False,
+        alias="DIRECTIONAL_OVERLAY_LLM_NEWS",
+        description=(
+            "If true, blend Ollama / OpenAI-compatible news probability (predict_news_llm) "
+            "with the keyword branch; falls back to keywords on LLM errors. Paper overlay only."
+        ),
+    )
 
     # ── Storage (multi-agent: one SQLite file per trader process) ─────────
     arb_sqlite_path: str = Field(

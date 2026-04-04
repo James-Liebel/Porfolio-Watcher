@@ -77,10 +77,10 @@ async def handle_advice(request: web.Request) -> web.Response:
     timeout = min(45.0, settings.advisor_http_timeout)
     async with aiohttp.ClientSession() as session:
         a_ctx = await fetch_agent_context(
-            session, "127.0.0.1", settings.agent_a_port, "Structural · A", timeout
+            session, "127.0.0.1", settings.agent_a_port, "Agent A", timeout
         )
         b_ctx = await fetch_agent_context(
-            session, "127.0.0.1", settings.agent_b_port, "Structural · B", timeout
+            session, "127.0.0.1", settings.agent_b_port, "Agent B", timeout
         )
         user_prompt = build_user_prompt(a_ctx, b_ctx)
         try:

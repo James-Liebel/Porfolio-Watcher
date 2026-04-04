@@ -462,6 +462,9 @@ class ArbEngine:
                 "latest_opportunities": len(self._opportunities),
                 "agent_display_name": (self._config.agent_display_name or "").strip(),
                 "control_api_port": int(self._config.control_api_port),
+                "directional_overlay_enabled": bool(self._config.enable_directional_overlay),
+                "directional_overlay_llm_news": bool(self._config.directional_overlay_llm_news),
+                "max_tracked_events_config": int(self._config.max_tracked_events),
             }
         )
         return payload

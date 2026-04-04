@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PolyArb — dual structural agents</title>
-  <meta name="description" content="Side-by-side dashboards for two isolated paper structural-arb traders." />
+  <title>PolyArb — arbitrage vs Ollama overlay</title>
+  <meta name="description" content="Side-by-side paper traders: structural arbitrage and Ollama-assisted overlay." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -12,13 +12,14 @@
 </head>
 <body>
   <header class="split-top">
-    <h1>PolyArb · dual structural agents</h1>
+    <h1>PolyArb · arbitrage vs Ollama overlay</h1>
     <p class="hint">
       This page embeds <strong>two control APIs</strong> (two <code>python -m src</code> processes), each with its own
-      <code>CONTROL_API_PORT</code> and <code>ARB_SQLITE_PATH</code>. The single dashboard
-      (<code>/ui/index.html</code>) only ever shows <em>one</em> bot — the host you opened.
+      <code>CONTROL_API_PORT</code> and <code>ARB_SQLITE_PATH</code>. Default layout: <strong>8765</strong> = structural
+      arbitrage only; <strong>8767</strong> = same arb scanner plus optional <strong>Ollama news</strong> directional overlay
+      when no arb trades fire. Labels: <code>?l1=Arbitrage&amp;l2=Ollama%20overlay</code>.
       Use <strong><code>http://127.0.0.1:8765/ui/agents-split.html</code></strong> (served by the bot) — not a <code>file://</code> path, or iframes often stay blank.
-      One-shot: <code>python scripts/start_paper_split.py</code> (two agents + Ollama advisor on <strong>8780</strong>).
+      One-shot: <code>python scripts/start_paper_split.py</code> (resets DBs, two agents + advisor on <strong>8780</strong>).
       Other ports: <code>?left=8778&amp;right=8767</code> or <code>?ports=8778,8767</code>.
       Official LLM toolkit:
       <a href="https://github.com/Polymarket/agents" target="_blank" rel="noopener noreferrer">Polymarket/agents</a>
@@ -57,6 +58,15 @@
       var lp = cleanPort(left, "8765");
       var rp = cleanPort(right, "8767");
       var base = "http://" + host + ":";
+      function paneLabel(which, port, custom) {
+        var c = (custom || "").trim();
+        if (c) return c;
+        if (which === 1 && port === "8765") return "Arbitrage";
+        if (which === 2 && port === "8767") return "Ollama overlay";
+        return "Agent " + which;
+      }
+      var l1 = paneLabel(1, lp, q.get("l1"));
+      var l2 = paneLabel(2, rp, q.get("l2"));
       document.querySelectorAll("[data-split-frame=\"1\"]").forEach(function (el) {
         el.src = base + lp + "/ui/index.html";
       });
@@ -64,10 +74,10 @@
         el.src = base + rp + "/ui/index.html";
       });
       document.querySelectorAll("[data-split-title=\"1\"]").forEach(function (el) {
-        el.textContent = "Agent 1 · " + host + ":" + lp;
+        el.textContent = l1 + " · " + host + ":" + lp;
       });
       document.querySelectorAll("[data-split-title=\"2\"]").forEach(function (el) {
-        el.textContent = "Agent 2 · " + host + ":" + rp;
+        el.textContent = l2 + " · " + host + ":" + rp;
       });
       var fb = document.getElementById("split-fallback-links");
       if (fb) {

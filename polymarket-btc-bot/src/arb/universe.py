@@ -9,6 +9,7 @@ import structlog
 
 from ..config import Settings
 from .models import ArbEvent, OutcomeMarket
+from .pricing import _seconds_to_expiry
 
 logger = structlog.get_logger(__name__)
 
@@ -58,6 +59,28 @@ def _is_resolved_status(value: Any) -> bool:
     }
 
 
+def _event_id_from_market_row(row: dict[str, Any]) -> str:
+    """Gamma sometimes links markets via eventId; newer payloads use nested event / events[]."""
+    for key in ("eventId", "event_id", "parentEventId"):
+        raw = row.get(key)
+        if raw is not None and str(raw).strip():
+            return str(raw).strip()
+    ev = row.get("event")
+    if isinstance(ev, dict):
+        nested = ev.get("id") or ev.get("eventId")
+        if nested is not None and str(nested).strip():
+            return str(nested).strip()
+    events = row.get("events")
+    if isinstance(events, list):
+        for item in events:
+            if not isinstance(item, dict):
+                continue
+            nested = item.get("id") or item.get("eventId")
+            if nested is not None and str(nested).strip():
+                return str(nested).strip()
+    return ""
+
+
 class GammaUniverseService:
     def __init__(
         self,
@@ -78,7 +101,13 @@ class GammaUniverseService:
     async def refresh(self) -> list[ArbEvent]:
         event_rows, market_rows = await self._load_payload()
         events = self._build_events(event_rows, market_rows)
-        logger.info("universe.refreshed", events=len(events), markets=sum(len(event.markets) for event in events))
+        logger.info(
+            "universe.refreshed",
+            events=len(events),
+            markets=sum(len(event.markets) for event in events),
+            gamma_event_rows=len(event_rows),
+            gamma_market_rows=len(market_rows),
+        )
         return events
 
     async def lookup_resolution(
@@ -102,23 +131,67 @@ class GammaUniverseService:
             timeout = aiohttp.ClientTimeout(total=float(self._config.gamma_http_timeout_seconds))
             self._session = aiohttp.ClientSession(timeout=timeout)
 
-        event_params = {
-            "active": "true",
-            "closed": "false",
-            "limit": str(self._config.max_tracked_events),
-        }
-        market_params = {
-            "active": "true",
-            "closed": "false",
-            "limit": str(max(self._config.max_tracked_events * 4, 200)),
-        }
+        event_rows = await self._paged_gamma_list(
+            "/events",
+            {"active": "true", "closed": "false"},
+            page_size=max(1, int(self._config.gamma_event_page_size)),
+            max_pages=max(1, int(self._config.gamma_event_max_pages)),
+        )
+        market_rows = await self._paged_gamma_list(
+            "/markets",
+            {"active": "true", "closed": "false"},
+            page_size=max(1, int(self._config.gamma_market_page_size)),
+            max_pages=max(1, int(self._config.gamma_market_max_pages)),
+        )
 
-        async with self._session.get(f"{self._config.gamma_base_url}/events", params=event_params) as resp:
-            event_rows = await resp.json()
-        async with self._session.get(f"{self._config.gamma_base_url}/markets", params=market_params) as resp:
-            market_rows = await resp.json()
+        return event_rows, market_rows
 
-        return event_rows if isinstance(event_rows, list) else [], market_rows if isinstance(market_rows, list) else []
+    async def _paged_gamma_list(
+        self,
+        path: str,
+        base_params: dict[str, str],
+        page_size: int,
+        max_pages: int,
+    ) -> list[dict[str, Any]]:
+        """GET Gamma list endpoints with offset pagination; dedupe by row id."""
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        url = f"{self._config.gamma_base_url}{path}"
+        pages_fetched = 0
+        for page in range(max_pages):
+            params = {
+                **base_params,
+                "limit": str(page_size),
+                "offset": str(page * page_size),
+            }
+            async with self._session.get(url, params=params) as resp:
+                if resp.status >= 400:
+                    logger.warning(
+                        "universe.gamma_page_error",
+                        path=path,
+                        status=resp.status,
+                        page=page,
+                    )
+                    break
+                chunk = await resp.json()
+            pages_fetched += 1
+            if not isinstance(chunk, list) or not chunk:
+                break
+            for row in chunk:
+                rid = str(row.get("id") or row.get("conditionId") or "")
+                if rid and rid not in seen:
+                    seen.add(rid)
+                    merged.append(row)
+            if len(chunk) < page_size:
+                break
+        logger.debug(
+            "universe.gamma_pages",
+            path=path,
+            pages=pages_fetched,
+            rows=len(merged),
+            page_size=page_size,
+        )
+        return merged
 
     async def _load_event_payload(self, event_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         if self._session is None:
@@ -174,13 +247,7 @@ class GammaUniverseService:
 
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in market_rows:
-            event_id = str(
-                row.get("eventId")
-                or row.get("event_id")
-                or (row.get("event") or {}).get("id")
-                or row.get("parentEventId")
-                or ""
-            )
+            event_id = _event_id_from_market_row(row)
             if event_id:
                 grouped[event_id].append(row)
 
@@ -215,6 +282,21 @@ class GammaUniverseService:
             if not self._config.category_is_allowed(category_str):
                 continue
 
+            end_time = str(meta.get("endDate") or meta.get("end_time") or rows[0].get("endDate") or "")
+            if (
+                self._config.universe_max_hours_to_resolution > 0
+                or self._config.universe_min_hours_to_resolution > 0
+            ):
+                secs = _seconds_to_expiry(end_time)
+                if secs is not None:
+                    hours = secs / 3600.0
+                    mx = self._config.universe_max_hours_to_resolution
+                    mn = self._config.universe_min_hours_to_resolution
+                    if mx > 0 and hours > mx:
+                        continue
+                    if mn > 0 and hours < mn:
+                        continue
+
             results.append(
                 ArbEvent(
                     event_id=event_id,
@@ -226,13 +308,23 @@ class GammaUniverseService:
                     status=status,
                     liquidity=liquidity,
                     rules_text=str(meta.get("rules") or meta.get("description") or rows[0].get("description") or ""),
-                    end_time=str(meta.get("endDate") or meta.get("end_time") or rows[0].get("endDate") or ""),
+                    end_time=end_time,
                     markets=markets,
                     raw=meta or {"event_id": event_id},
                 )
             )
 
-        results.sort(key=lambda event: event.liquidity, reverse=True)
+        def _rank(event: ArbEvent) -> tuple[int | float, ...]:
+            if self._config.universe_prefer_neg_risk:
+                nr = (
+                    1
+                    if (event.neg_risk or event.enable_neg_risk) and not event.neg_risk_augmented
+                    else 0
+                )
+                return (nr, event.liquidity)
+            return (event.liquidity,)
+
+        results.sort(key=_rank, reverse=True)
         return results[: self._config.max_tracked_events]
 
     def _build_event_snapshot(

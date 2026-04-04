@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import aiohttp.web as web
 import structlog
@@ -18,6 +19,8 @@ from .engine import ArbEngine
 from .repository import ArbRepository
 
 logger = structlog.get_logger(__name__)
+
+_FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
 
 @web.middleware
@@ -85,6 +88,9 @@ class ArbControlAPI:
 
     async def _summary(self, request: web.Request) -> web.Response:
         return _json(self._engine.summary())
+
+    async def _ui_redirect(self, request: web.Request) -> web.StreamResponse:
+        raise web.HTTPFound(location="/ui/index.html")
 
     async def _events(self, request: web.Request) -> web.Response:
         return _json(self._engine.events_snapshot())
@@ -270,6 +276,10 @@ class ArbControlAPI:
         app.router.add_post("/halt/asset", self._halt_asset_compat)
         app.router.add_post("/resume/asset", self._resume_asset_compat)
 
+        if _FRONTEND_DIR.is_dir():
+            app.router.add_get("/ui", self._ui_redirect)
+            app.router.add_static("/ui/", _FRONTEND_DIR)
+
         for route in list(app.router.routes()):
             if hasattr(route, "resource"):
                 try:
@@ -280,8 +290,26 @@ class ArbControlAPI:
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", self._config.control_api_port)
-        await site.start()
-        logger.info("arb_control.started", port=self._config.control_api_port)
+        try:
+            await site.start()
+        except OSError as exc:
+            await runner.cleanup()
+            logger.error(
+                "arb_control.bind_failed",
+                port=self._config.control_api_port,
+                hint=(
+                    "Another process is using this port (often a duplicate bot). "
+                    "Stop it or set CONTROL_API_PORT in .env."
+                ),
+                error=str(exc),
+            )
+            raise
+        port = self._config.control_api_port
+        logger.info(
+            "arb_control.started",
+            port=port,
+            dashboard_url=f"http://127.0.0.1:{port}/ui/index.html",
+        )
         try:
             while True:
                 await asyncio.sleep(3600)

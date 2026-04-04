@@ -1,0 +1,146 @@
+/* Split view for two structural-arb traders (separate processes / ports). */
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #0a0d14;
+  color: #eef1f9;
+  font-family: Inter, system-ui, sans-serif;
+}
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.split-top {
+  padding: 12px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(135deg, #0f1528 0%, #141c35 100%);
+}
+.split-top h1 {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+.split-top .hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #8b9abb;
+  line-height: 1.45;
+}
+.split-top a {
+  color: #4f8ef7;
+}
+.split-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  flex: 1;
+  min-height: 0;
+  background: rgba(255, 255, 255, 0.06);
+}
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #0a0d14;
+}
+.pane-title {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7893;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.pane iframe {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  min-height: 0;
+  background: #111520;
+}
+.advice-panel {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: #111520;
+  padding: 14px 20px 20px;
+  max-height: 42vh;
+  overflow: auto;
+}
+.advice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.advice-head h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+.advice-meta {
+  font-size: 0.75rem;
+  color: #6b7893;
+}
+.advice-status {
+  font-size: 0.72rem;
+  color: #2dd4a0;
+  font-weight: 600;
+}
+.advice-refresh {
+  font-size: 0.75rem;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(79, 142, 247, 0.4);
+  background: rgba(79, 142, 247, 0.12);
+  color: #4f8ef7;
+  cursor: pointer;
+  font-family: inherit;
+}
+.advice-refresh:hover {
+  background: rgba(79, 142, 247, 0.2);
+}
+#advice-body {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: #c8d2e6;
+}
+#advice-body pre,
+.advice-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.8rem;
+}
+#advice-body h3 {
+  font-size: 0.9rem;
+  margin: 12px 0 6px;
+  color: #eef1f9;
+}
+.advice-hint {
+  color: #8b9abb;
+  font-size: 0.82rem;
+  margin: 0;
+}
+.advice-hint code {
+  font-size: 0.78rem;
+  color: #9b72ff;
+}
+
+@media (max-width: 900px) {
+  .split-grid {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+  .pane iframe {
+    min-height: 70vh;
+  }
+}

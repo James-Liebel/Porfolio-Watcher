@@ -15,7 +15,7 @@ import structlog
 
 from .arb import ArbControlAPI, ArbEngine, ArbRepository
 from .config import Settings, get_settings
-from .storage.db import Database
+from .storage.db import Database, get_default_database_path
 
 
 def _configure_logging(level: str) -> None:
@@ -38,8 +38,9 @@ async def main() -> None:
     _configure_logging(config.log_level)
     log = structlog.get_logger("main")
 
-    legacy_db = Database()
-    repository = ArbRepository()
+    db_path = (config.arb_sqlite_path or "").strip() or get_default_database_path()
+    legacy_db = Database(db_path)
+    repository = ArbRepository(db_path)
     engine = ArbEngine(config=config, legacy_db=legacy_db, repository=repository)
     control_api = ArbControlAPI(config=config, engine=engine, legacy_db=legacy_db, repository=repository)
 
@@ -51,6 +52,8 @@ async def main() -> None:
         clob_host=config.clob_host,
         arb_poll_seconds=config.arb_poll_seconds,
         max_tracked_events=config.max_tracked_events,
+        sqlite_path=db_path,
+        control_port=config.control_api_port,
     )
 
     shutting_down = {"value": False}
@@ -75,13 +78,21 @@ async def main() -> None:
         except NotImplementedError:
             pass
 
-    running_tasks = [
-        asyncio.create_task(_safe_run(engine.run(), "arb_engine")),
-        asyncio.create_task(_safe_run(control_api.run(), "arb_control")),
-    ]
+    engine_task = asyncio.create_task(_safe_run(engine.run(), "arb_engine"))
+    control_task = asyncio.create_task(_safe_run(control_api.run(), "arb_control"))
 
     try:
-        await asyncio.gather(*running_tasks)
+        done, pending = await asyncio.wait(
+            {engine_task, control_task},
+            return_when=asyncio.FIRST_EXCEPTION,
+        )
+        for finished in done:
+            exc = finished.exception()
+            if exc is not None:
+                for p in pending:
+                    p.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                raise exc
     except asyncio.CancelledError:
         await shutdown("CANCELLED")
 
@@ -92,8 +103,10 @@ async def _safe_run(coro, name: str) -> None:
         await coro
     except asyncio.CancelledError:
         log.info(f"{name}.cancelled")
+        raise
     except Exception as exc:
         log.error(f"{name}.fatal_error", error=str(exc), exc_info=True)
+        raise
 
 
 if __name__ == "__main__":

@@ -156,6 +156,7 @@ class ArbEngine:
                 await self._repository.record_book(book)
 
             auto_settled = await self._auto_settle_resolved_events_locked()
+            diagnostics = self._scanner.cycle_diagnostics(events, real_books)
             opportunities = self._scanner.scan(events, real_books)
             self._opportunities = opportunities
             executed = 0
@@ -192,6 +193,7 @@ class ArbEngine:
                 "auto_settled": auto_settled,
                 "opportunities": len(opportunities),
                 "executed": executed,
+                "diagnostics": diagnostics,
                 **bsrc,
             }
             logger.info(
@@ -203,6 +205,8 @@ class ArbEngine:
                 books_synthetic=bsrc["books_synthetic"],
                 books_other=bsrc["books_other"],
             )
+            if self._config.arb_log_cycle_diagnostics:
+                logger.info("arb_engine.cycle_diagnostics", **diagnostics)
             return dict(self._last_cycle_summary)
 
     async def _execute_opportunity(self, opportunity: ArbOpportunity) -> BasketRecord | None:
@@ -410,6 +414,8 @@ class ArbEngine:
                 "last_cycle_at": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
                 "last_cycle": dict(self._last_cycle_summary),
                 "latest_opportunities": len(self._opportunities),
+                "agent_display_name": (self._config.agent_display_name or "").strip(),
+                "control_api_port": int(self._config.control_api_port),
             }
         )
         return payload

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from ..config import Settings
 from .book_matching import filled_size, walk_taker_levels
 from .fees import taker_fee_on_notional
-from .models import ArbEvent, ArbOpportunity, OpportunityLeg, TokenBook
+from .models import ArbEvent, ArbOpportunity, OpportunityLeg, OutcomeMarket, TokenBook
 
 
 def _seconds_to_expiry(end_time_str: str) -> float | None:
@@ -173,6 +175,17 @@ def _is_excluded_neg_risk_outcome(value: str) -> bool:
     return normalized in {"", "other", "others"}
 
 
+@dataclass(slots=True)
+class _CompleteSetWork:
+    size: float
+    cash_out: float
+    profit: float
+    net_edge_bps: float
+    seconds_to_expiry: float | None
+    legs_spec: list[tuple[TokenBook, float, bool]]
+    yes_templates: list[tuple[float, OpportunityLeg, TokenBook]]
+
+
 class OpportunityScanner:
     def __init__(self, config: Settings) -> None:
         self._config = config
@@ -192,12 +205,12 @@ class OpportunityScanner:
         )
         return opportunities[: self._config.max_opportunities_per_cycle * 10]
 
-    def _complete_set_opportunities(self, event: ArbEvent, books: dict[str, TokenBook]) -> list[ArbOpportunity]:
+    def _complete_set_work(self, event: ArbEvent, books: dict[str, TokenBook]) -> _CompleteSetWork | None:
         normalized_outcomes = [_normalize_outcome(market.outcome_name) for market in event.markets]
         if any(not outcome for outcome in normalized_outcomes):
-            return []
+            return None
         if len(set(normalized_outcomes)) != len(normalized_outcomes):
-            return []
+            return None
 
         legs_spec: list[tuple[TokenBook, float, bool]] = []
         yes_templates: list[tuple[float, OpportunityLeg, TokenBook]] = []
@@ -206,7 +219,7 @@ class OpportunityScanner:
         for market in event.markets:
             book = books.get(market.yes_token_id)
             if book is None or book.best_ask <= 0:
-                return []
+                return None
             legs_spec.append((book, book.best_ask, market.fees_enabled))
             yes_templates.append(
                 (
@@ -225,14 +238,30 @@ class OpportunityScanner:
                 )
             )
 
-        size, cash_out = _max_size_under_notional_complete_set(legs_spec, self._config.max_basket_notional, self._config)
+        size, cash_out = _max_size_under_notional_complete_set(
+            legs_spec, self._config.max_basket_notional, self._config
+        )
         if size <= 1e-12 or cash_out <= 0:
-            return []
+            return None
 
         payout = size * 1.0
         profit = payout - cash_out
         net_edge_bps = _edge_bps(profit, cash_out)
-        if net_edge_bps < self._config.min_complete_set_edge_bps or profit <= 0:
+        return _CompleteSetWork(
+            size=size,
+            cash_out=cash_out,
+            profit=profit,
+            net_edge_bps=net_edge_bps,
+            seconds_to_expiry=seconds_to_expiry,
+            legs_spec=legs_spec,
+            yes_templates=yes_templates,
+        )
+
+    def _complete_set_opportunities(self, event: ArbEvent, books: dict[str, TokenBook]) -> list[ArbOpportunity]:
+        w = self._complete_set_work(event, books)
+        if w is None:
+            return []
+        if w.net_edge_bps < self._config.min_complete_set_edge_bps or w.profit <= 0:
             return []
 
         legs = [
@@ -243,136 +272,186 @@ class OpportunityScanner:
                 position_side=leg.position_side,
                 action=leg.action,
                 price=leg.price,
-                size=size,
+                size=w.size,
                 fees_enabled=leg.fees_enabled,
             )
-            for _, leg, _ in yes_templates
+            for _, leg, _ in w.yes_templates
         ]
-        avg_unit_cost = cash_out / size
+        avg_unit_cost = w.cash_out / w.size
         return [
             ArbOpportunity(
                 strategy_type="complete_set",
                 event_id=event.event_id,
                 event_title=event.title,
-                gross_edge_bps=_edge_bps(size - cash_out, cash_out),
-                net_edge_bps=net_edge_bps,
-                capital_required=cash_out,
-                expected_profit=profit,
+                gross_edge_bps=_edge_bps(w.size - w.cash_out, w.cash_out),
+                net_edge_bps=w.net_edge_bps,
+                capital_required=w.cash_out,
+                expected_profit=w.profit,
                 legs=legs,
                 rationale=(
-                    f"Buy YES legs (~{avg_unit_cost:.4f}/set incl. fees at size {size:.4f}) "
+                    f"Buy YES legs (~{avg_unit_cost:.4f}/set incl. fees at size {w.size:.4f}) "
                     f"and settle complete set for 1.0000"
                 ),
                 requires_conversion=False,
                 settle_on_resolution=True,
                 cooldown_key=f"complete_set:{event.event_id}",
-                seconds_to_expiry=seconds_to_expiry,
+                seconds_to_expiry=w.seconds_to_expiry,
             )
         ]
 
-    def _neg_risk_opportunities(self, event: ArbEvent, books: dict[str, TokenBook]) -> list[ArbOpportunity]:
+    @staticmethod
+    def _neg_risk_event_eligible(event: ArbEvent) -> bool:
         if not (event.neg_risk or event.enable_neg_risk):
-            return []
+            return False
         if event.neg_risk_augmented:
-            return []
+            return False
         if any(_is_excluded_neg_risk_outcome(market.outcome_name) for market in event.markets):
+            return False
+        return True
+
+    def _neg_risk_try_source(
+        self, event: ArbEvent, books: dict[str, TokenBook], source_market: OutcomeMarket
+    ) -> ArbOpportunity | None:
+        no_book = books.get(source_market.no_token_id)
+        if no_book is None or no_book.best_ask <= 0:
+            return None
+
+        sell_legs: list[tuple[float, OpportunityLeg, TokenBook]] = []
+        sell_specs: list[tuple[TokenBook, float, bool]] = []
+        for market in event.markets:
+            if market.market_id == source_market.market_id:
+                continue
+            yes_book = books.get(market.yes_token_id)
+            if yes_book is None or yes_book.best_bid <= 0:
+                sell_legs = []
+                sell_specs = []
+                break
+            sell_specs.append((yes_book, yes_book.best_bid, market.fees_enabled))
+            sell_legs.append(
+                (
+                    yes_book.best_bid,
+                    OpportunityLeg(
+                        market_id=market.market_id,
+                        token_id=market.yes_token_id,
+                        outcome_name=market.outcome_name,
+                        position_side="YES",
+                        action="SELL",
+                        price=yes_book.best_bid,
+                        size=0.0,
+                        fees_enabled=market.fees_enabled,
+                    ),
+                    yes_book,
+                )
+            )
+        if not sell_legs:
+            return None
+
+        size, buy_cost, sell_in, profit = _max_size_neg_risk_under_notional(
+            no_book,
+            no_book.best_ask,
+            source_market.fees_enabled,
+            sell_specs,
+            self._config.max_basket_notional,
+            self._config,
+        )
+        if size <= 1e-12 or buy_cost <= 0:
+            return None
+
+        net_edge_bps = _edge_bps(profit, buy_cost)
+        seconds_to_expiry = _seconds_to_expiry(event.end_time)
+        buy_leg = OpportunityLeg(
+            market_id=source_market.market_id,
+            token_id=source_market.no_token_id,
+            outcome_name=source_market.outcome_name,
+            position_side="NO",
+            action="BUY",
+            price=no_book.best_ask,
+            size=size,
+            fees_enabled=source_market.fees_enabled,
+        )
+        sell_legs_sized = [
+            OpportunityLeg(
+                market_id=leg.market_id,
+                token_id=leg.token_id,
+                outcome_name=leg.outcome_name,
+                position_side=leg.position_side,
+                action=leg.action,
+                price=leg.price,
+                size=size,
+                fees_enabled=leg.fees_enabled,
+            )
+            for _, leg, _ in sell_legs
+        ]
+        return ArbOpportunity(
+            strategy_type="neg_risk_conversion",
+            event_id=event.event_id,
+            event_title=event.title,
+            gross_edge_bps=_edge_bps(sell_in - buy_cost, buy_cost),
+            net_edge_bps=net_edge_bps,
+            capital_required=buy_cost,
+            expected_profit=profit,
+            legs=[buy_leg, *sell_legs_sized],
+            rationale=(
+                f"Buy NO on {source_market.outcome_name} at {no_book.best_ask:.4f}, "
+                f"convert, then sell other YES legs (net ~{profit / size:.4f}/unit at size {size:.4f})"
+            ),
+            requires_conversion=True,
+            settle_on_resolution=False,
+            convert_from_market_id=source_market.market_id,
+            convert_to_market_ids=[leg.market_id for leg in sell_legs_sized],
+            cooldown_key=f"neg_risk:{event.event_id}:{source_market.market_id}",
+            seconds_to_expiry=seconds_to_expiry,
+        )
+
+    def _neg_risk_opportunities(self, event: ArbEvent, books: dict[str, TokenBook]) -> list[ArbOpportunity]:
+        if not self._neg_risk_event_eligible(event):
             return []
 
         opportunities: list[ArbOpportunity] = []
-        seconds_to_expiry = _seconds_to_expiry(event.end_time)
         for source_market in event.markets:
-            no_book = books.get(source_market.no_token_id)
-            if no_book is None or no_book.best_ask <= 0:
+            opp = self._neg_risk_try_source(event, books, source_market)
+            if opp is None:
                 continue
-
-            sell_legs: list[tuple[float, OpportunityLeg, TokenBook]] = []
-            sell_specs: list[tuple[TokenBook, float, bool]] = []
-            for market in event.markets:
-                if market.market_id == source_market.market_id:
-                    continue
-                yes_book = books.get(market.yes_token_id)
-                if yes_book is None or yes_book.best_bid <= 0:
-                    sell_legs = []
-                    sell_specs = []
-                    break
-                sell_specs.append((yes_book, yes_book.best_bid, market.fees_enabled))
-                sell_legs.append(
-                    (
-                        yes_book.best_bid,
-                        OpportunityLeg(
-                            market_id=market.market_id,
-                            token_id=market.yes_token_id,
-                            outcome_name=market.outcome_name,
-                            position_side="YES",
-                            action="SELL",
-                            price=yes_book.best_bid,
-                            size=0.0,
-                            fees_enabled=market.fees_enabled,
-                        ),
-                        yes_book,
-                    )
-                )
-            if not sell_legs:
+            if opp.net_edge_bps < self._config.min_neg_risk_edge_bps or opp.expected_profit <= 0:
                 continue
-
-            size, buy_cost, sell_in, profit = _max_size_neg_risk_under_notional(
-                no_book,
-                no_book.best_ask,
-                source_market.fees_enabled,
-                sell_specs,
-                self._config.max_basket_notional,
-                self._config,
-            )
-            if size <= 1e-12 or buy_cost <= 0:
-                continue
-
-            net_edge_bps = _edge_bps(profit, buy_cost)
-            if net_edge_bps < self._config.min_neg_risk_edge_bps or profit <= 0:
-                continue
-
-            buy_leg = OpportunityLeg(
-                market_id=source_market.market_id,
-                token_id=source_market.no_token_id,
-                outcome_name=source_market.outcome_name,
-                position_side="NO",
-                action="BUY",
-                price=no_book.best_ask,
-                size=size,
-                fees_enabled=source_market.fees_enabled,
-            )
-            sell_legs_sized = [
-                OpportunityLeg(
-                    market_id=leg.market_id,
-                    token_id=leg.token_id,
-                    outcome_name=leg.outcome_name,
-                    position_side=leg.position_side,
-                    action=leg.action,
-                    price=leg.price,
-                    size=size,
-                    fees_enabled=leg.fees_enabled,
-                )
-                for _, leg, _ in sell_legs
-            ]
-            opportunities.append(
-                ArbOpportunity(
-                    strategy_type="neg_risk_conversion",
-                    event_id=event.event_id,
-                    event_title=event.title,
-                    gross_edge_bps=_edge_bps(sell_in - buy_cost, buy_cost),
-                    net_edge_bps=net_edge_bps,
-                    capital_required=buy_cost,
-                    expected_profit=profit,
-                    legs=[buy_leg, *sell_legs_sized],
-                    rationale=(
-                        f"Buy NO on {source_market.outcome_name} at {no_book.best_ask:.4f}, "
-                        f"convert, then sell other YES legs (net ~{profit / size:.4f}/unit at size {size:.4f})"
-                    ),
-                    requires_conversion=True,
-                    settle_on_resolution=False,
-                    convert_from_market_id=source_market.market_id,
-                    convert_to_market_ids=[leg.market_id for leg in sell_legs_sized],
-                    cooldown_key=f"neg_risk:{event.event_id}:{source_market.market_id}",
-                    seconds_to_expiry=seconds_to_expiry,
-                )
-            )
+            opportunities.append(opp)
         return opportunities
+
+    def cycle_diagnostics(self, events: list[ArbEvent], books: dict[str, TokenBook]) -> dict[str, Any]:
+        """Structural counts and best raw edges (ignoring MIN_*_EDGE_BPS) for observability."""
+        neg_tagged = 0
+        neg_priceable_events = 0
+        complete_priceable_events = 0
+        best_cs_bps: float | None = None
+        best_nr_bps: float | None = None
+
+        for event in events:
+            if event.neg_risk or event.enable_neg_risk:
+                neg_tagged += 1
+
+            w = self._complete_set_work(event, books)
+            if w is not None:
+                complete_priceable_events += 1
+                best_cs_bps = w.net_edge_bps if best_cs_bps is None else max(best_cs_bps, w.net_edge_bps)
+
+            if self._neg_risk_event_eligible(event):
+                raw_edges: list[float] = []
+                for source_market in event.markets:
+                    opp = self._neg_risk_try_source(event, books, source_market)
+                    if opp is not None:
+                        raw_edges.append(opp.net_edge_bps)
+                if raw_edges:
+                    neg_priceable_events += 1
+                    mx = max(raw_edges)
+                    best_nr_bps = mx if best_nr_bps is None else max(best_nr_bps, mx)
+
+        return {
+            "events_in_universe": len(events),
+            "neg_risk_tagged_events": neg_tagged,
+            "neg_risk_priceable_events": neg_priceable_events,
+            "complete_set_priceable_events": complete_priceable_events,
+            "max_raw_complete_set_edge_bps": best_cs_bps,
+            "max_raw_neg_risk_edge_bps": best_nr_bps,
+            "min_complete_set_edge_bps_config": float(self._config.min_complete_set_edge_bps),
+            "min_neg_risk_edge_bps_config": float(self._config.min_neg_risk_edge_bps),
+        }

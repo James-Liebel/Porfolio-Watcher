@@ -85,6 +85,23 @@ body {
   color: var(--text-primary);
 }
 
+.agent-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent-purple);
+  padding: 4px 10px;
+  border-radius: 100px;
+  background: rgba(155, 114, 255, 0.12);
+  border: 1px solid rgba(155, 114, 255, 0.25);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-label.hidden {
+  display: none;
+}
+
 /* Badges */
 .badge {
   font-size: 0.65rem;
@@ -537,6 +554,34 @@ body {
   color: var(--text-muted);
   text-transform: uppercase;
 }
+.diag-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+}
+.diag-dl {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.diag-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 0.88rem;
+}
+.diag-row dt {
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+.diag-row dd {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-primary);
+  text-align: right;
+}
+
 .empty-inline {
   color: var(--text-muted);
   font-size: 0.85rem;

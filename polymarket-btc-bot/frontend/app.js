@@ -3,7 +3,11 @@
  * Polls ArbControlAPI (python -m src) at 127.0.0.1:8765.
  */
 
-const API_BASE = "http://127.0.0.1:8765";
+// Same host when dashboard is served from /ui/ on the control API; file:// falls back to loopback.
+const API_BASE =
+  window.location.protocol === "file:"
+    ? "http://127.0.0.1:8765"
+    : `${window.location.protocol}//${window.location.host}`;
 const POLL_INTERVAL = 5000;
 
 let refreshCountdown = POLL_INTERVAL / 1000;
@@ -29,6 +33,7 @@ async function poll() {
 
     renderHeader(health, summary);
     renderStatCards(summary);
+    renderDiagnostics(summary);
     renderEventsList(Array.isArray(events) ? events : []);
     renderBasketsTable(Array.isArray(baskets) ? baskets : []);
     renderOrdersTable(Array.isArray(orders) ? orders : []);
@@ -49,6 +54,18 @@ async function fetchJSON(path) {
 }
 
 function renderHeader(health, summary) {
+  const agentEl = document.getElementById("agent-label");
+  if (agentEl) {
+    const an = String(health.agent_display_name || "").trim();
+    if (an) {
+      agentEl.textContent = an;
+      agentEl.classList.remove("hidden");
+    } else {
+      agentEl.textContent = "";
+      agentEl.classList.add("hidden");
+    }
+  }
+
   const badge = document.getElementById("mode-badge");
   if (health.paper_trade) {
     badge.textContent = "PAPER";
@@ -93,6 +110,33 @@ function renderStatCards(s) {
   setText("stat-winrate", lc);
   setText("stat-open", s.open_baskets ?? "—");
   setText("stat-notfilled", s.open_positions ?? "—");
+}
+
+function renderDiagnostics(s) {
+  const el = document.getElementById("diag-panel");
+  if (!el) return;
+  const d = s.last_cycle && s.last_cycle.diagnostics;
+  if (!d || typeof d !== "object") {
+    el.innerHTML = '<p class="empty-inline">No diagnostics yet (wait for one engine cycle).</p>';
+    return;
+  }
+  const fmtBps = (v) => (v == null || Number.isNaN(Number(v)) ? "—" : formatNum(Number(v), 2));
+  const rows = [
+    ["Events in universe", d.events_in_universe ?? "—"],
+    ["Neg-risk tagged", d.neg_risk_tagged_events ?? "—"],
+    ["Neg-risk priceable (CLOB)", d.neg_risk_priceable_events ?? "—"],
+    ["Complete-set priceable (CLOB)", d.complete_set_priceable_events ?? "—"],
+    ["Max raw complete-set edge (bps)", fmtBps(d.max_raw_complete_set_edge_bps)],
+    ["Max raw neg-risk edge (bps)", fmtBps(d.max_raw_neg_risk_edge_bps)],
+    ["Config floor complete-set (bps)", fmtBps(d.min_complete_set_edge_bps_config)],
+    ["Config floor neg-risk (bps)", fmtBps(d.min_neg_risk_edge_bps_config)],
+  ];
+  el.innerHTML = `<dl class="diag-dl">${rows
+    .map(
+      ([k, v]) =>
+        `<div class="diag-row"><dt>${escHtml(k)}</dt><dd>${escHtml(String(v))}</dd></div>`
+    )
+    .join("")}</dl>`;
 }
 
 function renderEventsList(events) {

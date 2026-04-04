@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PolyArb — dual structural agents</title>
+  <meta name="description" content="Side-by-side dashboards for two isolated paper structural-arb traders." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="agents-split.css" />
+</head>
+<body>
+  <header class="split-top">
+    <h1>PolyArb · dual structural agents</h1>
+    <p class="hint">
+      Each pane is a separate process: its own SQLite state and <strong>$100</strong> paper bankroll
+      (<code>INITIAL_BANKROLL</code>). Official LLM toolkit:
+      <a href="https://github.com/Polymarket/agents" target="_blank" rel="noopener noreferrer">Polymarket/agents</a>
+      — this repo runs the structural-arb engine only.
+    </p>
+  </header>
+  <div class="split-grid">
+    <div class="pane">
+      <div class="pane-title">Agent 1 · 127.0.0.1:8765</div>
+      <iframe title="Structural agent 1" src="http://127.0.0.1:8765/ui/index.html"></iframe>
+    </div>
+    <div class="pane">
+      <div class="pane-title">Agent 2 · 127.0.0.1:8767</div>
+      <iframe title="Structural agent 2" src="http://127.0.0.1:8767/ui/index.html"></iframe>
+    </div>
+  </div>
+
+  <section class="advice-panel" aria-label="LLM advisor">
+    <div class="advice-head">
+      <h2>LLM advisor · 127.0.0.1:8780</h2>
+      <span id="advice-status" class="advice-status">Loading…</span>
+      <button type="button" class="advice-refresh" id="advice-refresh">Refresh now</button>
+    </div>
+    <p id="advice-meta" class="advice-meta"></p>
+    <div id="advice-body"></div>
+  </section>
+
+  <script src="agents-advisor.js"></script>
+</body>
+</html>

@@ -80,7 +80,13 @@ def main() -> int:
         ("ARB_POLL_SECONDS", settings.arb_poll_seconds),
         ("ARB_CYCLE_ERROR_BACKOFF_SECONDS", settings.arb_cycle_error_backoff_seconds),
         ("GAMMA_HTTP_TIMEOUT_SECONDS", settings.gamma_http_timeout_seconds),
+        ("GAMMA_EVENT_PAGE_SIZE", settings.gamma_event_page_size),
+        ("GAMMA_EVENT_MAX_PAGES", settings.gamma_event_max_pages),
+        ("GAMMA_MARKET_PAGE_SIZE", settings.gamma_market_page_size),
+        ("GAMMA_MARKET_MAX_PAGES", settings.gamma_market_max_pages),
+        ("MAX_TRACKED_EVENTS", settings.max_tracked_events),
         ("CLOB_BOOK_FETCH_CONCURRENCY", settings.clob_book_fetch_concurrency),
+        ("CLOB_BOOK_RETRY_ATTEMPTS", settings.clob_book_retry_attempts),
         ("INITIAL_BANKROLL", settings.initial_bankroll),
     )
     for label, val in core:

@@ -147,6 +147,7 @@ def canonicalize_cycle_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "books_clob": int(last_cycle.get("books_clob", 0)),
                 "books_synthetic": int(last_cycle.get("books_synthetic", 0)),
                 "books_other": int(last_cycle.get("books_other", 0)),
+                "diagnostics": last_cycle.get("diagnostics") or {},
             },
         },
         "positions": sorted(

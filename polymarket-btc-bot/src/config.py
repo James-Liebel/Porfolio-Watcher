@@ -72,14 +72,37 @@ class Settings(BaseSettings):
     arb_cycle_error_backoff_seconds: int = Field(
         default=8, alias="ARB_CYCLE_ERROR_BACKOFF_SECONDS"
     )
-    max_tracked_events: int = Field(default=100, alias="MAX_TRACKED_EVENTS")
+    max_tracked_events: int = Field(
+        default=300,
+        alias="MAX_TRACKED_EVENTS",
+        description="Cap on events kept after sort; CLOB books are fetched only for this many.",
+    )
+    # Paginated Gamma /events fetch (offset + limit per page).
+    gamma_event_page_size: int = Field(default=150, alias="GAMMA_EVENT_PAGE_SIZE")
+    gamma_event_max_pages: int = Field(
+        default=25,
+        alias="GAMMA_EVENT_MAX_PAGES",
+        description="Max pages to pull for event metadata (stops early on short/empty page).",
+    )
+    # Paginated Gamma /markets fetch — drives how many distinct events can be discovered.
+    gamma_market_page_size: int = Field(default=500, alias="GAMMA_MARKET_PAGE_SIZE")
+    gamma_market_max_pages: int = Field(
+        default=40,
+        alias="GAMMA_MARKET_MAX_PAGES",
+        description="Max pages of markets (page_size * max_pages rows upper bound before dedupe).",
+    )
     # aiohttp total timeout for Gamma REST calls (events/markets).
     gamma_http_timeout_seconds: float = Field(
-        default=30.0, alias="GAMMA_HTTP_TIMEOUT_SECONDS"
+        default=60.0, alias="GAMMA_HTTP_TIMEOUT_SECONDS"
     )
     # Limit parallel CLOB get_order_book calls per cycle to avoid throttling and thread pile-up.
     clob_book_fetch_concurrency: int = Field(
-        default=12, alias="CLOB_BOOK_FETCH_CONCURRENCY"
+        default=24, alias="CLOB_BOOK_FETCH_CONCURRENCY"
+    )
+    # Retries when get_order_book raises (e.g. transient network). 0 = single attempt only.
+    clob_book_retry_attempts: int = Field(default=2, alias="CLOB_BOOK_RETRY_ATTEMPTS")
+    clob_book_retry_delay_seconds: float = Field(
+        default=0.35, alias="CLOB_BOOK_RETRY_DELAY_SECONDS"
     )
     min_event_liquidity: float = Field(default=2000.0, alias="MIN_EVENT_LIQUIDITY")
     min_outcomes_per_event: int = Field(default=2, alias="MIN_OUTCOMES_PER_EVENT")
@@ -131,6 +154,28 @@ class Settings(BaseSettings):
     replay_output_dir: str = Field(default="data/replays", alias="REPLAY_OUTPUT_DIR")
     category_allowlist: str = Field(default="", alias="CATEGORY_ALLOWLIST")
     category_blocklist: str = Field(default="", alias="CATEGORY_BLOCKLIST")
+
+    # Prefer neg-risk-eligible events when ranking the universe (liquidity tie-breaker).
+    universe_prefer_neg_risk: bool = Field(default=True, alias="UNIVERSE_PREFER_NEG_RISK")
+    # 0 = disabled. Otherwise keep events whose endDate is within this many hours (upper bound).
+    universe_max_hours_to_resolution: float = Field(
+        default=0.0, alias="UNIVERSE_MAX_HOURS_TO_RESOLUTION"
+    )
+    # 0 = disabled. Drop events resolving sooner than this many hours (lower bound).
+    universe_min_hours_to_resolution: float = Field(
+        default=0.0, alias="UNIVERSE_MIN_HOURS_TO_RESOLUTION"
+    )
+    # Log per-cycle scanner diagnostics (near-miss edges, structural counts) at INFO.
+    arb_log_cycle_diagnostics: bool = Field(default=True, alias="ARB_LOG_CYCLE_DIAGNOSTICS")
+
+    # ── Storage (multi-agent: one SQLite file per trader process) ─────────
+    arb_sqlite_path: str = Field(
+        default="",
+        alias="ARB_SQLITE_PATH",
+        description="If set, legacy DB + arb repository use this file; otherwise data/trades.db.",
+    )
+    # Shown in /health and dashboard when running multiple local traders.
+    agent_display_name: str = Field(default="", alias="AGENT_DISPLAY_NAME")
 
     # ── Control API ─────────────────────────────────────────────────────
     control_api_port: int = Field(default=8765, alias="CONTROL_API_PORT")

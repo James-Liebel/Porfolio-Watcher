@@ -12,6 +12,11 @@ logger = structlog.get_logger(__name__)
 
 _DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "trades.db")
 
+
+def get_default_database_path() -> str:
+    """Absolute path to the default legacy + arb SQLite file."""
+    return os.path.abspath(_DB_PATH)
+
 _CREATE_TRADES = """
 CREATE TABLE IF NOT EXISTS trades (
     id                    INTEGER PRIMARY KEY AUTOINCREMENT,

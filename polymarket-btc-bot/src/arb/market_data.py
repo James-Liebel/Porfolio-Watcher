@@ -80,7 +80,28 @@ class ClobMarketDataService:
         return books
 
     async def _fetch_book(self, market: OutcomeMarket, token_id: str, contract_side: str) -> TokenBook:
-        raw_book = await asyncio.to_thread(self._client.get_order_book, token_id)
+        attempts = 1 + max(0, int(self._config.clob_book_retry_attempts))
+        last_exc: Exception | None = None
+        raw_book = None
+        for attempt in range(attempts):
+            try:
+                raw_book = await asyncio.to_thread(self._client.get_order_book, token_id)
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt + 1 >= attempts:
+                    logger.warning(
+                        "market_data.book_error",
+                        token_id=token_id,
+                        attempts=attempts,
+                        error=str(exc),
+                    )
+                    raise
+                delay = float(self._config.clob_book_retry_delay_seconds) * (attempt + 1)
+                await asyncio.sleep(delay)
+        if raw_book is None:
+            assert last_exc is not None
+            raise last_exc
         bids = self._parse_levels(getattr(raw_book, "bids", None))
         asks = self._parse_levels(getattr(raw_book, "asks", None))
         if not bids and not asks:

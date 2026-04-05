@@ -93,14 +93,16 @@ Test your credentials with the py-clob-client:
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds
 
+# Fill from Polymarket → Settings → API Keys (secret is shown only once).
+# Use the same hex private key you put in .env as WALLET_PRIVATE_KEY — not the public address.
 client = ClobClient(
     host="https://clob.polymarket.com",
-    key="0xYourWalletAddress",
+    key="<hex private key>",
     chain_id=137,
     creds=ApiCreds(
-        api_key="your_api_key",
-        api_secret="your_secret",
-        api_passphrase="your_passphrase",
+        api_key="<paste>",
+        api_secret="<paste>",
+        api_passphrase="<paste>",
     ),
 )
 print(client.get_ok())  # Should print: {'ok': True}

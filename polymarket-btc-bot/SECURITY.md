@@ -5,7 +5,7 @@ This project is intended to run **on your own machine** with a **loopback-only**
 ## What is safe by default
 
 - The structural-arb and legacy control HTTP servers bind to **`127.0.0.1`** only (not `0.0.0.0`), so they are not reachable from other hosts unless you add port forwarding or a reverse proxy yourself.
-- **`.env` is listed in `.gitignore`**. Use **`.env.example`** as a template; it must contain only placeholders, never live credentials.
+- **`.env` is listed in `.gitignore`**. Use **`.env.example`** as a template; it must contain only **empty** secret fields and comments, never live credentials. (Filled-in fake values like `password=example` trigger secret scanners and are intentionally avoided.)
 
 ## What you should configure
 

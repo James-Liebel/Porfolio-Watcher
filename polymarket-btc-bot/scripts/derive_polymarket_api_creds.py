@@ -66,13 +66,8 @@ def main() -> int:
     pk_raw = (settings.wallet_private_key or "").strip()
     pk = _normalize_private_key(pk_raw)
 
-    if "YourPrivateKeyHere" in pk_raw or pk_raw == "0xYourPrivateKeyHere":
-        print("[X] WALLET_PRIVATE_KEY is still the template text from .env.example.")
-        print("    Replace the entire value after = with your exported key (one line, save the file, re-run).")
-        return 1
-
-    if not pk_raw or pk_raw.startswith("0xYour") or "YourPrivateKey" in pk_raw:
-        print("[X] WALLET_PRIVATE_KEY is still empty or placeholder.")
+    if not pk_raw:
+        print("[X] WALLET_PRIVATE_KEY is empty.")
         print("    MetaMask → ⋮ → Account details → Show private key → paste into .env as one line.")
         return 1
 

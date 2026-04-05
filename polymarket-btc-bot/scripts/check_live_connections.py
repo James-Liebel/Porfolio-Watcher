@@ -70,11 +70,19 @@ def check_clob_time(cfg: Settings) -> bool:
         return False
 
 
+def _looks_like_hex_private_key(raw: str) -> bool:
+    s = raw.strip()
+    if not s:
+        return False
+    body = s[2:] if s.startswith("0x") else s
+    return len(body) == 64 and all(c in "0123456789abcdefABCDEF" for c in body)
+
+
 def check_clob_auth(cfg: Settings) -> bool:
     """Call create_or_derive_api_creds() to verify L2 credentials are accepted."""
     pk_raw = (cfg.wallet_private_key or "").strip()
-    if not pk_raw or "YourPrivate" in pk_raw:
-        print("[X] WALLET_PRIVATE_KEY not set — cannot check CLOB auth")
+    if not _looks_like_hex_private_key(pk_raw):
+        print("[X] WALLET_PRIVATE_KEY not set or not 64 hex chars — cannot check CLOB auth")
         return False
 
     api_k = (cfg.polymarket_api_key or "").strip()

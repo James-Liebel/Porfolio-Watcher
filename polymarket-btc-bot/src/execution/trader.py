@@ -14,6 +14,7 @@ from typing import Optional
 import structlog
 
 from ..config import Settings
+from ..polymarket import build_live_clob_client, build_public_clob_client
 from ..markets.window import WindowState
 from ..signal.calculator import SignalResult
 
@@ -72,29 +73,10 @@ class Trader:
         if self._client is not None:
             return self._client
         try:
-            from py_clob_client.client import ClobClient
-
             if self._config.paper_trade:
-                self._client = ClobClient(
-                    host="https://clob.polymarket.com",
-                    chain_id=137,
-                    signature_type=2,
-                )
+                self._client = build_public_clob_client(self._config)
             else:
-                from py_clob_client.clob_types import ApiCreds
-
-                self._client = ClobClient(
-                    host="https://clob.polymarket.com",
-                    key=self._config.polymarket_wallet_address,
-                    chain_id=137,
-                    creds=ApiCreds(
-                        api_key=self._config.polymarket_api_key,
-                        api_secret=self._config.polymarket_secret,
-                        api_passphrase=self._config.polymarket_passphrase,
-                    ),
-                    signature_type=2,
-                    funder=self._config.polymarket_wallet_address,
-                )
+                self._client = build_live_clob_client(self._config)
         except Exception as exc:
             logger.error("trader.client_init_error", error=str(exc))
             raise

@@ -250,6 +250,10 @@ class OpportunityScanner:
             book = books.get(market.yes_token_id)
             if book is None or book.best_ask <= 0:
                 return None
+            # Polymarket CLOB enforces 2-decimal price precision (minimum tick = $0.01).
+            # Prices below $0.01 cannot be submitted as valid orders.
+            if book.best_ask < 0.01:
+                return None
             legs_spec.append((book, book.best_ask, market.fees_enabled))
             yes_templates.append(
                 (
@@ -350,7 +354,8 @@ class OpportunityScanner:
         self, event: ArbEvent, books: dict[str, TokenBook], source_market: OutcomeMarket
     ) -> ArbOpportunity | None:
         no_book = books.get(source_market.no_token_id)
-        if no_book is None or no_book.best_ask <= 0:
+        # Polymarket CLOB requires price >= $0.01 (2 decimal places).
+        if no_book is None or no_book.best_ask < 0.01:
             return None
 
         sell_legs: list[tuple[float, OpportunityLeg, TokenBook]] = []
@@ -359,7 +364,7 @@ class OpportunityScanner:
             if market.market_id == source_market.market_id:
                 continue
             yes_book = books.get(market.yes_token_id)
-            if yes_book is None or yes_book.best_bid <= 0:
+            if yes_book is None or yes_book.best_bid < 0.01:
                 sell_legs = []
                 sell_specs = []
                 break

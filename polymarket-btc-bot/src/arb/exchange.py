@@ -118,6 +118,10 @@ class PaperExchange:
     def get_orders(self) -> list[OrderRecord]:
         return [replace(order) for order in self._orders.values()]
 
+    def all_orders(self) -> list[OrderRecord]:
+        """Snapshot of all orders (used for basket slippage stats; avoids touching private _orders)."""
+        return [replace(order) for order in self._orders.values()]
+
     def get_open_orders(self) -> list[OrderRecord]:
         return [replace(self._orders[order_id]) for order_id in self._open_orders]
 

@@ -24,6 +24,8 @@ ENV/
 data/*.db
 data/*.db-wal
 data/*.db-shm
+# Local paper/live JSONL under data/ (equity snapshots, etc.)
+data/**/*.jsonl
 data/replays/
 data/backtests/
 data/prediction_training/

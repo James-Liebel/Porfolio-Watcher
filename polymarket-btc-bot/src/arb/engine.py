@@ -22,6 +22,14 @@ from .universe import GammaUniverseService
 logger = structlog.get_logger(__name__)
 
 
+def _make_exchange(config: Settings) -> PaperExchange:
+    if config.arb_live_execution:
+        from .live_exchange import LiveClobExchange
+
+        return LiveClobExchange(config)
+    return PaperExchange(config)
+
+
 def _book_source_counts(books: dict[str, TokenBook]) -> dict[str, int]:
     clob = synthetic = other = 0
     for book in books.values():
@@ -58,7 +66,7 @@ class ArbEngine:
         self._market_data = market_data or ClobMarketDataService(config)
         self._scanner = scanner or OpportunityScanner(config)
         self._risk = risk or ArbRiskManager(config)
-        self._exchange = exchange or PaperExchange(config)
+        self._exchange = exchange or _make_exchange(config)
         self._events: dict[str, ArbEvent] = {}
         self._active_event_ids: set[str] = set()
         self._last_books = {}
@@ -84,6 +92,13 @@ class ArbEngine:
     async def initialize(self) -> None:
         if self._initialized:
             return
+        if self._config.arb_live_execution:
+            if self._config.paper_trade:
+                raise ValueError(
+                    "ARB_LIVE_EXECUTION requires PAPER_TRADE=false (live CLOB orders are incompatible with paper mode)"
+                )
+            if not self._config.allow_taker_execution:
+                raise ValueError("ARB_LIVE_EXECUTION requires ALLOW_TAKER_EXECUTION=true (FOK taker legs)")
         await self._legacy_db.init()
         await self._repository.init()
         await self._risk.hydrate_from_db(self._legacy_db, self._exchange)
@@ -186,6 +201,13 @@ class ArbEngine:
 
             for opportunity in opportunities:
                 open_baskets = self._open_basket_count()
+                if self._config.arb_live_execution and opportunity.requires_conversion:
+                    await self._repository.record_opportunity(
+                        opportunity,
+                        decision="rejected",
+                        reason="neg-risk on-chain conversion not available in proxy-wallet mode",
+                    )
+                    continue
                 approved, reason = self._risk.approve(
                     opportunity,
                     self._exchange,
@@ -308,7 +330,7 @@ class ArbEngine:
 
             total_slippage_bps = 0.0
             leg_count = 0
-            for order in self._exchange._orders.values():
+            for order in self._exchange.all_orders():
                 if order.basket_id != basket.basket_id or order.status != "filled" or order.average_price <= 0:
                     continue
                 intended = next((leg.price for leg in opportunity.legs if leg.token_id == order.token_id), None)
@@ -471,6 +493,7 @@ class ArbEngine:
         payload.update(
             {
                 "paper_trade": self._config.paper_trade,
+                "arb_live_execution": bool(self._config.arb_live_execution),
                 "tracked_events": len(self._active_event_ids),
                 "last_cycle_at": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
                 "last_cycle": dict(self._last_cycle_summary),

@@ -3,6 +3,7 @@
 from .control import ArbControlAPI
 from .engine import ArbEngine
 from .exchange import PaperExchange
+from .live_exchange import LiveClobExchange
 from .market_data import ClobMarketDataService
 from .pricing import OpportunityScanner
 from .repository import ArbRepository
@@ -13,6 +14,7 @@ __all__ = [
     "ArbControlAPI",
     "ArbEngine",
     "PaperExchange",
+    "LiveClobExchange",
     "ClobMarketDataService",
     "OpportunityScanner",
     "ArbRepository",

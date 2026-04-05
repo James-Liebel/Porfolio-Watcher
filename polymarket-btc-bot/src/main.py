@@ -48,6 +48,7 @@ async def main() -> None:
     log.info(
         "arb_bot.started",
         paper_trade=config.paper_trade,
+        arb_live_execution=config.arb_live_execution,
         paper_taker_fee_bps=config.paper_taker_fee_bps,
         paper_spread_penalty_bps=config.paper_spread_penalty_bps,
         gamma_base_url=config.gamma_base_url,

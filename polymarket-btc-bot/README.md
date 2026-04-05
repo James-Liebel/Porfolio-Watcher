@@ -110,20 +110,27 @@ This is the **default** and what `python -m src` is built for.
    .\.venv\Scripts\python.exe -m pytest tests -q
    ```
 
-**Important:** The structural-arb engine always uses the in-repo **`PaperExchange`** (simulated fills, positions, and settlement). Your `PAPER_TRADE` flag mainly drives **labeling** in the API/UI and consistency with the rest of the config; it does not toggle a separate “live matching engine” for arb.
+**Paper mode (default):** The structural-arb engine uses the in-repo **`PaperExchange`** (simulated fills, positions, and settlement).
 
-### Live / real-money trading (read this before changing `.env`)
+### Live structural-arb (real CLOB orders)
 
-- **`python -m src` does not place real Polymarket orders.** There is no live CLOB execution wired into the structural-arb loop in this repository. Setting **`PAPER_TRADE=false` does not turn on real arb trades** — you would still be on the paper exchange path for arb logic.
-- The codebase still contains a **legacy** `src/execution/trader.py` (`Trader`) that *can* talk to the real Polymarket API when **`PAPER_TRADE=false`** and API/wallet fields are set, but **there is no maintained `python -m …` entrypoint** that runs that directional loop alongside the current `main.py` (which only starts the arb engine). Treat live directional trading as **bring-your-own runner** or historical code, not something this repo starts by default.
-- If you later add live arb execution yourself, you would still follow wallet and API setup in **`setup/polymarket_wallet.md`**, use strong **`CONTROL_API_TOKEN`**, and never commit **`.env`**.
+When you are ready for **real money** on the same `python -m src` arb loop:
 
-**If you intend to use real keys at all** (even for experiments), set in `.env`:
+1. **Wallet and API** — Set `POLYMARKET_WALLET_ADDRESS`, `WALLET_PRIVATE_KEY`, and either the full **`POLYMARKET_*` L2 trio** or leave all three empty so L2 creds are **derived** at runtime (same as `scripts/derive_polymarket_api_creds.py`). See `setup/polymarket_wallet.md` if you need a checklist.
+2. **Flip these flags in `.env`:**
+   - `PAPER_TRADE=false`
+   - `ARB_LIVE_EXECUTION=true`
+   - `ALLOW_TAKER_EXECUTION=true` (required — live legs use **FOK/FAK** taker orders, not GTC maker)
+3. **USDC / allowances** — Your funder wallet must have USDC on Polygon and **token approvals** for the Polymarket exchange contracts (see Polymarket docs / UI deposit flow).
+4. **Control API** — Set a strong random **`CONTROL_API_TOKEN`** so the local HTTP API is not open to other processes.
+5. **Neg-risk** — **Negative-risk conversion** (buy NO → convert → sell YES legs) is **not** implemented for live execution yet. Those opportunities are **rejected** automatically when `ARB_LIVE_EXECUTION=true`. Complete-set / basket arbs that do **not** require conversion can still execute. To avoid scanning neg-risk edges entirely, raise **`MIN_NEG_RISK_EDGE_BPS`** very high (for example `999999`).
+6. **Sizing** — Start with small **`MAX_BASKET_NOTIONAL`**, **`MAX_EVENT_EXPOSURE_PCT`**, and **`MAX_OPPORTUNITIES_PER_CYCLE`** until you trust the path.
 
-- `PAPER_TRADE=false`
-- `POLYMARKET_API_KEY`, `POLYMARKET_SECRET`, `POLYMARKET_PASSPHRASE`, `POLYMARKET_WALLET_ADDRESS`, `WALLET_PRIVATE_KEY` as described in `setup/polymarket_wallet.md`
+Run **`python scripts/check_env.py`** — it must exit **0**. Startup logs include `arb_live_execution`.
 
-Then run **`python scripts/check_env.py`** — it must exit **0** in live mode (all required secrets present).
+**Legacy directional module:** `src/execution/trader.py` (`Trader`) is separate from the arb engine; it is not started by `python -m src`.
+
+**Never commit `.env`.** Rotate keys if they were ever exposed.
 
 ---
 

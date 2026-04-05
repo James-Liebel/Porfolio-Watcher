@@ -31,13 +31,22 @@ class Settings(BaseSettings):
     polymarket_passphrase: str = Field(default="", alias="POLYMARKET_PASSPHRASE")
     polymarket_wallet_address: str = Field(default="", alias="POLYMARKET_WALLET_ADDRESS")
 
+    # Relayer UI (key + signer address) — informational; does not replace L2 CLOB creds.
+    relayer_api_key: str = Field(default="", alias="RELAYER_API_KEY")
+    relayer_signer_address: str = Field(default="", alias="RELAYER_SIGNER_ADDRESS")
+
+    # Builder Program — optional; all three required for BuilderConfig on ClobClient.
+    builder_api_key: str = Field(default="", alias="BUILDER_API_KEY")
+    builder_secret: str = Field(default="", alias="BUILDER_SECRET")
+    builder_passphrase: str = Field(default="", alias="BUILDER_PASSPHRASE")
+
     # ── Polygon wallet ──────────────────────────────────────────────────
     # Required for live trading only; leave empty for paper trade mode.
     wallet_private_key: str = Field(default="", alias="WALLET_PRIVATE_KEY")
 
     # ── Polygon RPC ─────────────────────────────────────────────────────
     polygon_rpc_url: str = Field(
-        default="https://polygon-rpc.com", alias="POLYGON_RPC_URL"
+        default="https://polygon-bor.publicnode.com", alias="POLYGON_RPC_URL"
     )
 
     # ── Telegram ────────────────────────────────────────────────────────
@@ -67,6 +76,8 @@ class Settings(BaseSettings):
     clob_host: str = Field(
         default="https://clob.polymarket.com", alias="CLOB_HOST"
     )
+    # 0=EOA (standard MetaMask wallet), 1=Magic/PolyProxy, 2=Gnosis Safe multisig.
+    clob_signature_type: int = Field(default=0, alias="CLOB_SIGNATURE_TYPE")
     arb_poll_seconds: int = Field(default=20, alias="ARB_POLL_SECONDS")
     # Extra delay after a failed run_cycle() before the normal poll wait (reduces tight error loops).
     arb_cycle_error_backoff_seconds: int = Field(
@@ -286,6 +297,8 @@ class Settings(BaseSettings):
 
     # ── Paper trade mode ────────────────────────────────────────────────
     paper_trade: bool = Field(default=True, alias="PAPER_TRADE")
+    # Structural arb: real CLOB orders via LiveClobExchange (requires PAPER_TRADE=false, taker FOK).
+    arb_live_execution: bool = Field(default=False, alias="ARB_LIVE_EXECUTION")
     paper_equity_snapshot_log: bool = Field(
         default=True,
         alias="PAPER_EQUITY_SNAPSHOT_LOG",

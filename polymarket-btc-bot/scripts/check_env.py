@@ -32,6 +32,18 @@ def _is_blank(value: object) -> bool:
     return str(value).strip() == ""
 
 
+def _l2_creds_ok(settings: Settings) -> bool:
+    """All three POLYMARKET_* set, or all empty (derive L2 at runtime from wallet key)."""
+    k = (settings.polymarket_api_key or "").strip()
+    s = (settings.polymarket_secret or "").strip()
+    p = (settings.polymarket_passphrase or "").strip()
+    if k and s and p:
+        return True
+    if not k and not s and not p:
+        return True
+    return False
+
+
 def main() -> int:
     if not ENV_PATH.exists():
         print("[X] .env file missing - copy .env.example to .env")
@@ -41,8 +53,17 @@ def main() -> int:
 
     print("[OK] Loaded settings from .env")
     print(f"     PAPER_TRADE={settings.paper_trade!r}  (structural-arb runtime: python -m src)")
+    print(f"     ARB_LIVE_EXECUTION={getattr(settings, 'arb_live_execution', False)!r}")
 
     exit_code = 0
+
+    if getattr(settings, "arb_live_execution", False) and settings.paper_trade:
+        print("[X] ARB_LIVE_EXECUTION=true requires PAPER_TRADE=false")
+        exit_code = 1
+
+    if getattr(settings, "arb_live_execution", False) and not settings.allow_taker_execution:
+        print("[X] ARB_LIVE_EXECUTION=true requires ALLOW_TAKER_EXECUTION=true")
+        exit_code = 1
 
     if settings.paper_trade:
         for _attr, alias in _LIVE_SECRET_FIELDS:
@@ -52,13 +73,38 @@ def main() -> int:
             else:
                 print(f"[OK] {alias} set (not required for paper)")
     else:
-        for attr, alias in _LIVE_SECRET_FIELDS:
+        for attr, alias in (
+            ("polymarket_wallet_address", "POLYMARKET_WALLET_ADDRESS"),
+            ("wallet_private_key", "WALLET_PRIVATE_KEY"),
+        ):
             val = getattr(settings, attr, "")
             if _is_blank(val):
                 print(f"[X] {alias} required when PAPER_TRADE=false")
                 exit_code = 1
             else:
                 print(f"[OK] {alias} set")
+        for attr, alias in (
+            ("polymarket_api_key", "POLYMARKET_API_KEY"),
+            ("polymarket_secret", "POLYMARKET_SECRET"),
+            ("polymarket_passphrase", "POLYMARKET_PASSPHRASE"),
+        ):
+            val = getattr(settings, attr, "")
+            if _is_blank(val):
+                print(f"[--] {alias} empty")
+            else:
+                print(f"[OK] {alias} set")
+        if not _l2_creds_ok(settings):
+            print(
+                "[X] POLYMARKET_API_KEY / POLYMARKET_SECRET / POLYMARKET_PASSPHRASE: "
+                "set all three, or leave all three empty to derive from WALLET_PRIVATE_KEY at runtime"
+            )
+            exit_code = 1
+        elif (
+            _is_blank(settings.polymarket_api_key)
+            and _is_blank(settings.polymarket_secret)
+            and _is_blank(settings.polymarket_passphrase)
+        ):
+            print("[OK] POLYMARKET_* empty — L2 creds will be derived from WALLET_PRIVATE_KEY at runtime")
 
     for attr, alias in _OPTIONAL_ALERT_FIELDS:
         val = getattr(settings, attr, "")

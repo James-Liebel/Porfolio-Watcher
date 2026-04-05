@@ -160,11 +160,17 @@ def ollama_overlay_env(port: int, rel_db: str, name: str) -> dict[str, str]:
             "DIRECTIONAL_OVERLAY_LLM_NEWS": "true",
             "DIRECTIONAL_OVERLAY_EVERY_N_CYCLES": "2",
             "DIRECTIONAL_OVERLAY_ONLY_WHEN_NO_ARB": "true",
-            "DIRECTIONAL_OVERLAY_MIN_EDGE": "0.06",
-            "DIRECTIONAL_OVERLAY_MAX_SPREAD": "0.14",
+            # Lower min-edge so the LLM-blended signal can clear the bar with real markets.
+            "DIRECTIONAL_OVERLAY_MIN_EDGE": "0.04",
+            # Allow slightly wider spreads (multi-outcome markets can be 10-15 cents wide).
+            "DIRECTIONAL_OVERLAY_MAX_SPREAD": "0.18",
             "DIRECTIONAL_OVERLAY_MAX_NOTIONAL": "12",
             "DIRECTIONAL_OVERLAY_CASH_FLOOR": "25",
             "CLOB_BOOK_FETCH_CONCURRENCY": "50",
+            # Evaluate up to 5 candidates per cycle; LLM is only called when keyword pre-filter passes.
+            "DIRECTIONAL_OVERLAY_MAX_EVENTS_PER_CYCLE": "5",
+            # Scan a mix of neg-risk multi-outcome AND simple binary events.
+            "UNIVERSE_PREFER_NEG_RISK": "false",
         }
     )
     return e

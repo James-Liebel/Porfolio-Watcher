@@ -25,13 +25,37 @@ def _evt(n_markets: int) -> ArbEvent:
     )
 
 
-def test_single_binary_requires_one_market_with_tokens():
-    assert overlay_mod._single_binary_market(_evt(0)) is None
-    assert overlay_mod._single_binary_market(_evt(2)) is None
-    one = _evt(1)
-    m = overlay_mod._single_binary_market(one)
-    assert m is not None
+def test_overlay_market_from_event_single_binary():
+    """_overlay_market_from_event returns None for empty events, picks best market otherwise."""
+    from src.arb.models import PriceLevel, TokenBook
+    from datetime import datetime, timezone
+
+    def _book(bid: float, ask: float, token_id: str) -> TokenBook:
+        now = datetime.now(timezone.utc)
+        return TokenBook(
+            token_id=token_id,
+            timestamp=now,
+            best_bid=bid,
+            best_ask=ask,
+            bids=[PriceLevel(price=bid, size=100.0)],
+            asks=[PriceLevel(price=ask, size=100.0)],
+            source="clob",
+        )
+
+    real_books = {
+        "y1": _book(0.48, 0.52, "y1"),
+        "y2": _book(0.38, 0.42, "y2"),
+    }
+    # Empty event → None
+    assert overlay_mod._overlay_market_from_event(_evt(0), real_books, 0.14) is None
+    # Single-binary event with valid book → returns market
+    result = overlay_mod._overlay_market_from_event(_evt(1), real_books, 0.14)
+    assert result is not None
+    m, query, bk = result
     assert m.yes_token_id == "y1"
+    # Multi-outcome event with valid books → returns best market by liquidity
+    result2 = overlay_mod._overlay_market_from_event(_evt(2), real_books, 0.14)
+    assert result2 is not None
 
 
 def test_overlay_respects_disabled_config():

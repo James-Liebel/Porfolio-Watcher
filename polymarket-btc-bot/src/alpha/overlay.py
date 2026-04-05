@@ -141,14 +141,45 @@ def _cached_headlines(title: str, cutoff: datetime) -> list[tuple[datetime, str]
     return rows
 
 
-def _single_binary_market(event: ArbEvent) -> Any | None:
-    """One market row with YES/NO tokens (typical Polymarket binary)."""
-    if len(event.markets) != 1:
+def _overlay_market_from_event(
+    event: ArbEvent, real_books: dict[str, TokenBook], max_spread: float
+) -> tuple[Any, str, TokenBook] | None:
+    """
+    Return (market, news_query_title, yes_book) for the best overlay candidate in this event.
+
+    Binary events (exactly 1 market): use the event title as the news query.
+    Multi-outcome events: pick the single most liquid market whose YES token has a valid CLOB
+    book and acceptable spread — use "<outcome> <event_title>" as the query so news is specific.
+
+    Returns None if no suitable market is found.
+    """
+    if not event.markets:
         return None
-    m = event.markets[0]
-    if not m.yes_token_id or not m.no_token_id:
-        return None
-    return m
+
+    best: tuple[Any, str, TokenBook] | None = None
+    best_liquidity = -1.0
+
+    for m in event.markets:
+        if not m.yes_token_id or not m.no_token_id:
+            continue
+        bk = real_books.get(m.yes_token_id)
+        if bk is None or bk.best_ask <= 0 or bk.best_ask >= 0.995 or bk.best_bid <= 0:
+            continue
+        if (bk.best_ask - bk.best_bid) > max_spread:
+            continue
+        # Avoid very extreme probabilities where model edge is unreliable.
+        if bk.best_ask < 0.04 or bk.best_ask > 0.96:
+            continue
+        liq = float(m.liquidity or 0.0)
+        if liq > best_liquidity:
+            best_liquidity = liq
+            if len(event.markets) == 1:
+                query = event.title
+            else:
+                query = f"{m.outcome_name} {event.title}"
+            best = (m, query, bk)
+
+    return best
 
 
 async def run_directional_overlay(
@@ -175,18 +206,14 @@ async def run_directional_overlay(
         return
 
     cutoff = datetime.now(timezone.utc)
-    candidates: list[tuple[ArbEvent, Any, TokenBook]] = []
+    max_spread = float(cfg.directional_overlay_max_spread)
+    candidates: list[tuple[ArbEvent, Any, str, TokenBook]] = []
     for event in sorted(events, key=lambda e: float(e.liquidity or 0.0), reverse=True):
-        m = _single_binary_market(event)
-        if m is None:
+        result = _overlay_market_from_event(event, real_books, max_spread)
+        if result is None:
             continue
-        yid = m.yes_token_id
-        bk = real_books.get(yid)
-        if bk is None or bk.best_ask <= 0 or bk.best_ask >= 0.995:
-            continue
-        if (bk.best_ask - bk.best_bid) > float(cfg.directional_overlay_max_spread):
-            continue
-        candidates.append((event, m, bk))
+        market, news_query, yes_book = result
+        candidates.append((event, market, news_query, yes_book))
         if len(candidates) >= int(cfg.directional_overlay_max_events_per_cycle):
             break
 
@@ -206,16 +233,17 @@ async def run_directional_overlay(
         if llm_news and candidates:
             session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_total))
 
-        for event, market, yes_book in candidates:
+        for event, market, news_query, yes_book in candidates:
             ask = float(yes_book.best_ask)
             mid = min(0.98, max(0.02, float(yes_book.mid)))
-            news_rows = await asyncio.to_thread(_cached_headlines, event.title, cutoff)
+            # Fetch news using the outcome-specific query (e.g. "Spain 2026 FIFA World Cup Winner")
+            news_rows = await asyncio.to_thread(_cached_headlines, news_query, cutoff)
             news_jsonl = [
                 {"time": t.isoformat(), "headline": h, "body": ""} for t, h in news_rows
             ]
 
             hist_jsonl: list[dict[str, Any]] = []
-            coin = _coin_for_title(event.title)
+            coin = _coin_for_title(news_query)
             if coin:
                 sig7 = await asyncio.to_thread(_coingecko_log_return, coin, cutoff, 7)
                 sig1 = await asyncio.to_thread(_coingecko_log_return, coin, cutoff, 1)
@@ -229,7 +257,7 @@ async def run_directional_overlay(
 
             case = EventCase(
                 event_id=event.event_id,
-                title=event.title,
+                title=news_query,
                 cutoff=cutoff,
                 resolved_yes=False,
                 market_yes_price=mid,
@@ -238,6 +266,14 @@ async def run_directional_overlay(
             )
             p_h = predict_history_shrunk(case, market_weight=shrink)
             p_kw = predict_news_keywords(case)
+
+            # Pre-filter with fast keyword+history signal before expensive LLM call.
+            # If keyword-only blended score is already hopeless (> 10 bps below threshold),
+            # skip the LLM entirely and move to the next candidate.
+            p_fast = (p_h + p_kw) / 2.0
+            if p_fast - ask < min_edge - 0.10:
+                continue
+
             if llm_news and session is not None and advisor_settings is not None:
                 try:
                     p_llm = await predict_news_llm(case, session, advisor_settings)
@@ -263,7 +299,8 @@ async def run_directional_overlay(
                 continue
 
             est_cost = size * ask * 1.02
-            if engine._exchange.cash < cash_floor + est_cost:
+            # Use available_cash (cash minus reserved for open orders) for the safety check.
+            if engine._exchange.available_cash < cash_floor + est_cost:
                 continue
 
             intent = OrderIntent(
@@ -284,14 +321,20 @@ async def run_directional_overlay(
                     "p_model": p,
                     "edge_vs_ask": edge,
                     "llm_news": llm_news,
+                    "news_query": news_query,
                 },
             )
-            order, _ = engine._exchange.place_order(intent)
+            order, fills = engine._exchange.place_order(intent)
+            # Persist order and fills to the repository so they appear in the orders table.
+            await engine._repository.record_order(order)
+            for fill in fills:
+                await engine._repository.record_fill(fill)
             if order.status == "filled" or order.filled_size > 1e-9:
                 logger.info(
                     "directional_overlay.filled",
                     event_id=event.event_id,
-                    title=event.title[:80],
+                    outcome=market.outcome_name,
+                    news_query=news_query[:60],
                     p_model=round(p, 4),
                     yes_ask=round(ask, 4),
                     edge=round(edge, 4),
@@ -302,6 +345,7 @@ async def run_directional_overlay(
                 logger.info(
                     "directional_overlay.skipped_order",
                     event_id=event.event_id,
+                    outcome=market.outcome_name,
                     reason=order.reason or order.status,
                     p_model=round(p, 4),
                     edge=round(edge, 4),

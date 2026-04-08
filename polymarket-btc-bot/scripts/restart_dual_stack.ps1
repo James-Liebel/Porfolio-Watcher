@@ -1,4 +1,4 @@
-# Stop listeners on agent + advisor ports, then start two $100 traders + LLM advisor.
+# Stop listeners on common bot ports, then start one paper structural arb.
 # Run from repo root or anywhere (script cd's to polymarket-btc-bot).
 
 $ErrorActionPreference = "SilentlyContinue"
@@ -19,7 +19,7 @@ $botRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $botRoot
 
 Write-Host ""
-Write-Host "Starting dual agents + advisor (Ollama on 11434 is left running)..."
+Write-Host "Starting single paper structural arb..."
 Write-Host ""
 
-& "$botRoot\.venv\Scripts\python.exe" "$botRoot\scripts\run_two_structural_agents.py" @args
+& "$botRoot\.venv\Scripts\python.exe" "$botRoot\scripts\start_paper_split.py" @args

@@ -102,7 +102,7 @@ class ArbControlAPI:
         raise web.HTTPFound(location="/ui/index.html")
 
     async def _split_ui_redirect(self, request: web.Request) -> web.StreamResponse:
-        raise web.HTTPFound(location="/ui/agents-split.html")
+        raise web.HTTPFound(location="/ui/index.html")
 
     async def _events(self, request: web.Request) -> web.Response:
         return _json(self._engine.events_snapshot())

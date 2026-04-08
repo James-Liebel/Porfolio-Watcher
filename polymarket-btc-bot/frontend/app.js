@@ -22,18 +22,6 @@ document.addEventListener("DOMContentLoaded", () => {
   if (EMBED_SPLIT) {
     document.body.classList.add("embed-split");
   }
-  const dual = document.querySelector("a.dual-dash-link");
-  if (dual && window.location.port) {
-    const rp =
-      (typeof window.__SPLIT_RIGHT_PORT__ !== "undefined" && window.__SPLIT_RIGHT_PORT__) ||
-      dual.getAttribute("data-split-right-port") ||
-      "8767";
-    dual.href =
-      "agents-split.html?left=" +
-      encodeURIComponent(window.location.port) +
-      "&right=" +
-      encodeURIComponent(String(rp).trim());
-  }
   poll();
   startCountdown();
 });

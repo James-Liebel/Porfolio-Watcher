@@ -143,7 +143,7 @@ Default port: `8765`
 Optional auth:
 - Set `CONTROL_API_TOKEN` to require `X-Control-Token: <token>` or `Authorization: Bearer <token>` on all routes except `/health`.
 
-**Dashboard:** `http://127.0.0.1:<CONTROL_API_PORT>/ui/index.html` shows **one** bot (the process you connected to). For **two** separate traders (different ports + SQLite files), use `python scripts/run_two_structural_agents.py` and open `http://127.0.0.1:8765/ui/agents-split.html`, or add query params `?left=<port>&right=<port>` if your ports differ.
+**Dashboard:** `http://127.0.0.1:<CONTROL_API_PORT>/ui/index.html` shows the single bot for that process. **Paper:** `python scripts/start_paper_split.py` (one arb bot on **8765**, DB `data/paper_arb.db`). **Live:** `python scripts/start_live_arb.py` (or `start_live_split.py`, same launcher). **Legacy dual** (arb + Ollama overlay on two ports): `python scripts/run_two_structural_agents.py` and `frontend/agents-split.html`.
 
 Useful endpoints:
 - `GET /health`

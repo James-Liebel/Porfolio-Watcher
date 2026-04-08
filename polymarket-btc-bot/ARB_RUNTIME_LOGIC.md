@@ -147,7 +147,9 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 
 **Paper time series (JSONL)** — When `PAPER_TRADE` and `PAPER_EQUITY_SNAPSHOT_LOG` are true, each cycle appends one line to `PAPER_EQUITY_LOG_PATH` (default `data/paper_tracking/equity.jsonl`): `summary` (same shape as the control API) plus `last_cycle` diagnostics. Use for quick plots or `jq` without querying SQLite.
 
-**Dual paper traders + split UI** — `python scripts/start_paper_split.py` kills **8765/8767/8778/8780**, resets `data/arb_agent_1.db` and `data/arb_agent_2.db`, starts two `python -m src` processes, starts **`agents.advisor_app`** on **8780** with **`LLM_PROVIDER=ollama`**, tries **`ollama serve`** if port **11434** is closed, and opens the browser. Split page: **`GET /split`** on agent A (redirects to `/ui/agents-split.html`) or `http://127.0.0.1:8765/ui/agents-split.html?left=8765&right=8767`. Those child processes set **`CONTROL_API_TOKEN` empty** so the embedded UI and advisor can call **`/summary`** without auth. If you use a token for manual curl, unset it for local split testing or pass **`X-Control-Token`**.
+**Single paper arb** — `python scripts/start_paper_split.py` kills **8765/8767/8780**, resets **`data/paper_arb.db`**, starts one `python -m src` on **8765** (structural arb only, no Ollama advisor). Dashboard: **`GET /split`** redirects to **`/ui/index.html`**. **`CONTROL_API_TOKEN`** is empty for local UI calls.
+
+**Legacy dual paper + split UI** — `python scripts/run_two_structural_agents.py` starts two traders plus optional advisor on **8780**; use **`frontend/agents-split.html`** with `?left=&right=` if ports differ.
 
 **Session recording & replay** — `scripts/record_arb_session.py` (optional `--write-meta`) and `scripts/replay_arb_session.py` verify deterministic replay. `scripts/run_historical_replay_suite.py --strict` batches JSONL files; committed fixtures live under `tests/fixtures/replay/`. `scripts/rigorous_backtest.py` records live cycles plus optional replay verification.
 

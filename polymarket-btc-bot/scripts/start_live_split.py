@@ -37,7 +37,7 @@ if str(ROOT) not in sys.path:
 
 # ── Shared live settings ─────────────────────────────────────────────────────
 # These override anything in .env for the live multi-agent run.
-# Sizes are deliberately conservative for a first live session.
+# Tuned for realized edge after multi-leg taker fees — quality floors + sensible size caps.
 _SHARED_LIVE: dict[str, str] = {
     "PAPER_TRADE": "false",
     "ARB_LIVE_EXECUTION": "true",
@@ -46,33 +46,51 @@ _SHARED_LIVE: dict[str, str] = {
     "PAPER_SPREAD_PENALTY_BPS": "0",
     # Use real taker fee rate (Polymarket charges 0.5 % on fee-enabled markets).
     "PAPER_TAKER_FEE_BPS": "50",
-    "ARB_POLL_SECONDS": "20",
-    "ARB_CYCLE_ERROR_BACKOFF_SECONDS": "10",
-    # Per-basket size cap — conservative to limit max loss on a single arb failure.
-    "MAX_BASKET_NOTIONAL": "15",
-    # Allow up to 35% of bankroll per event so a $15 basket fits on a $48 agent.
-    # MAX_BASKET_NOTIONAL is the true position size cap; event cap is just a second floor.
-    "MAX_EVENT_EXPOSURE_PCT": "0.35",
-    "MAX_TOTAL_OPEN_BASKETS": "2",
-    "MAX_BASKETS_PER_STRATEGY": "1",
-    "MAX_OPPORTUNITIES_PER_CYCLE": "1",
+    "ARB_POLL_SECONDS": "15",
+    "ARB_CYCLE_ERROR_BACKOFF_SECONDS": "8",
+    # Per-basket cap; raise INITIAL_BANKROLL in .env if on-chain USDC >> nominal half-bankroll.
+    "MAX_BASKET_NOTIONAL": "24",
+    # Must be ≥ MAX_BASKET_NOTIONAL / per-agent equity (contributed_capital) for approval.
+    "MAX_EVENT_EXPOSURE_PCT": "0.52",
+    # More concurrent structural baskets when cash is available (same wallet on-chain).
+    "MAX_TOTAL_OPEN_BASKETS": "4",
+    "MAX_BASKETS_PER_STRATEGY": "3",
+    "MAX_OPPORTUNITIES_PER_CYCLE": "6",
     # Halt if 2 consecutive baskets fail (fill errors).
     "ARB_CONSECUTIVE_EXECUTION_FAILURES_HALT": "2",
     # 0 = off. With ~300 events some tokens lack CLOB books (Gamma stale) — 10–30 synthetic
     # per cycle is normal; do not block execution on that alone.
     "ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE": "0",
-    # Require stronger edge on first live session.
-    "MIN_COMPLETE_SET_EDGE_BPS": "30",
-    # Neg-risk conversion requires calling NegRiskAdapter on-chain from the proxy wallet,
-    # which is not directly supported via EOA private key in Polymarket's proxy model.
-    # Keep disabled until this is resolved (MATIC + proxy call routing).
+    # Skip very wide books where modeled edge rarely survives real FOK/FAK.
+    "MAX_ARB_LEG_SPREAD_BPS": "650",
+    # Floor above fee noise on multi-leg complete sets (50 bps/leg markets add up fast).
+    "MIN_COMPLETE_SET_EDGE_BPS": "28",
+    # Neg-risk disabled: sig_type=2 proxy is not authorized for NegRiskCTFExchange.
+    # Complete-set arb is active and has real positive edge right now.
     "MIN_NEG_RISK_EDGE_BPS": "999999",
-    "ARB_MIN_EXPECTED_PROFIT_USD": "0.20",
-    "MAX_TRACKED_EVENTS": "300",
+    "ARB_MIN_EXPECTED_PROFIT_USD": "0.18",
+    # 500 events gives ~4× more priceable opportunities to scan each cycle.
+    "MAX_TRACKED_EVENTS": "500",
+    # 0 = no upper bound — long-dated markets stay eligible when they are more profitable.
+    # Shorter-dated events still win ties via UNIVERSE_PREFER_SHORTER_RESOLUTION.
+    "UNIVERSE_MAX_HOURS_TO_RESOLUTION": "0",
+    # Among similar liquidity / neg-risk, prefer sooner endDate (does not exclude long markets).
+    "UNIVERSE_PREFER_SHORTER_RESOLUTION": "true",
+    # Re-enter the same event sooner after a fill (default 300s is slow for compounding).
+    "OPPORTUNITY_COOLDOWN_SECONDS": "120",
     # Auto-settle resolved events so positions close cleanly.
     "AUTO_SETTLE_RESOLVED_EVENTS": "true",
+    # Unwind when selling all YES legs on the CLOB beats holding to resolution ($1/set), within epsilon.
+    "COMPLETE_SET_AUTO_UNWIND": "true",
+    "COMPLETE_SET_UNWIND_VS_RESOLUTION": "true",
+    # Small slack only — exit when CLOB is truly competitive with $1/set, not giving away edge.
+    "COMPLETE_SET_UNWIND_VS_RESOLUTION_EPSILON_USD": "0.05",
+    # Why a complete set stayed in hold (throttled per basket/reason).
+    "ARB_LOG_COMPLETE_SET_HOLD_INTERVAL_SECONDS": "120",
     # Directional overlay is paper-only; guard is in overlay.py but force off anyway.
     "ENABLE_DIRECTIONAL_OVERLAY": "false",
+    # Top-trader mirror is experimental; off for live (set TRADER_FOLLOW_ALLOW_LIVE=true to opt in).
+    "ENABLE_TRADER_FOLLOW": "false",
     # Log at INFO so startup is legible.
     "LOG_LEVEL": "INFO",
 }
@@ -197,8 +215,10 @@ def main() -> int:
     print("=" * 60)
     print(f"  About to start 2 LIVE bots with ${half:.2f} each (${total_bankroll:.2f} total).")
     print("  Real USDC will be used for Polymarket orders.")
-    print("  Max per-basket: $15   Max per-event: 35% of bankroll")
-    print("  Strategy: complete-set arb only (neg-risk pending proxy resolution)")
+    print("  Caps: see _SHARED_LIVE (MAX_BASKET_NOTIONAL / MAX_EVENT_EXPOSURE_PCT / open baskets).")
+    print("  If Safe USDC >> this bankroll, raise INITIAL_BANKROLL or use --bankroll so the ledger can deploy more.")
+    print("  Strategy: complete-set arb (neg-risk paused — proxy not auth'd for NR exchange)")
+    print("  Universe: 500 events; resolved positions auto-settle even while event stays in the scan list.")
     print("=" * 60)
     if args.yes:
         print("--yes flag set; skipping confirmation prompt.")

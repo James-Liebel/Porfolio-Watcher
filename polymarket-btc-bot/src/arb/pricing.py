@@ -225,11 +225,15 @@ class OpportunityScanner:
             opportunities.extend(self._complete_set_opportunities(event, books))
             opportunities.extend(self._neg_risk_opportunities(event, books))
 
+        # Rank by absolute expected profit first so long-dated, high-$ arbs are not buried behind
+        # small short-dated trades (annualization alone overweights "quick" marginal edges).
+        # Tie-break: annualized edge (capital velocity), then spot edge bps, then $/capital.
         opportunities.sort(
             key=lambda opp: (
-                _annualized_edge_bps(opp.net_edge_bps, opp.seconds_to_expiry),
-                opp.expected_profit / max(opp.capital_required, 1e-9),
                 opp.expected_profit,
+                _annualized_edge_bps(opp.net_edge_bps, opp.seconds_to_expiry),
+                opp.net_edge_bps,
+                opp.expected_profit / max(opp.capital_required, 1e-9),
             ),
             reverse=True,
         )
@@ -467,7 +471,12 @@ class OpportunityScanner:
         return opportunities
 
     def cycle_diagnostics(self, events: list[ArbEvent], books: dict[str, TokenBook]) -> dict[str, Any]:
-        """Structural counts and best raw edges (ignoring MIN_*_EDGE_BPS) for observability."""
+        """Structural counts and best raw edges (ignoring MIN_*_EDGE_BPS) for observability.
+
+        Negative max_raw_complete_set_edge_bps means the best priced complete set in the universe still
+        costs more than $1/set at top-of-book (after modeled taker fees) — common when markets are tight;
+        it is not by itself a bug.
+        """
         neg_tagged = 0
         neg_priceable_events = 0
         complete_priceable_events = 0

@@ -219,11 +219,37 @@ def check_wallet_key_match(cfg: Settings) -> bool:
         from eth_account import Account
 
         pk = pk_raw if pk_raw.startswith("0x") else "0x" + pk_raw
-        derived = Account.from_key(pk).address.lower()
-        if derived == addr.lower():
-            print(f"[OK] Private key matches POLYMARKET_WALLET_ADDRESS ({derived[:6]}…{derived[-4:]})")
+        derived_eoa = Account.from_key(pk).address.lower()
+
+        # Direct match: sig_type=0, address IS the EOA.
+        if derived_eoa == addr.lower():
+            print(f"[OK] Private key matches POLYMARKET_WALLET_ADDRESS ({derived_eoa[:6]}…{derived_eoa[-4:]})")
             return True
-        print(f"[X] Key mismatch: key controls {derived}  but .env has {addr.lower()}")
+
+        # sig_type=2 (Gnosis Safe): address is the Safe contract, key is the EOA owner.
+        sig_type = int(getattr(cfg, "clob_signature_type", 0) or 0)
+        if sig_type == 2:
+            try:
+                from web3 import Web3
+
+                rpc = (getattr(cfg, "polygon_rpc_url", None) or "https://polygon-bor.publicnode.com").strip()
+                w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 10}))
+                CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+                abi = [{"inputs": [{"name": "_addr", "type": "address"}], "name": "getSafeAddress",
+                        "outputs": [{"name": "", "type": "address"}], "stateMutability": "view", "type": "function"}]
+                exchange = w3.eth.contract(address=Web3.to_checksum_address(CTF_EXCHANGE), abi=abi)
+                safe = exchange.functions.getSafeAddress(Web3.to_checksum_address(derived_eoa)).call().lower()
+                if safe == addr.lower():
+                    print(f"[OK] sig_type=2: EOA {derived_eoa[:6]}…{derived_eoa[-4:]} owns "
+                          f"Safe {addr[:6]}…{addr[-4:]} (on-chain verified)")
+                    return True
+                print(f"[X] sig_type=2 mismatch: EOA's registered Safe ({safe[:6]}…) != .env ({addr[:6]}…)")
+                return False
+            except Exception as exc:
+                print(f"[!] Could not verify Safe on-chain ({exc}); treating as warning, not block.")
+                return True  # Don't block startup for RPC issues
+
+        print(f"[X] Key mismatch: key controls {derived_eoa}  but .env has {addr.lower()}")
         return False
     except Exception as exc:
         print(f"[X] Wallet key match check failed: {exc}")

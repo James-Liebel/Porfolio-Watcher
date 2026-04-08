@@ -60,10 +60,13 @@ def build_live_clob_client(cfg: Settings) -> Any:
     host = (cfg.clob_host or "https://clob.polymarket.com").rstrip("/")
 
     # Signature type for ORDER signing (not L2 auth):
-    #   0 = standard EOA (MetaMask / raw private key)
-    #   1 = Magic Link / PolyProxy
-    #   2 = Gnosis Safe multisig
-    # Most retail wallets are EOA (type 0). Type 2 is only for Safe multi-sig.
+    #   0 = standard EOA — funder IS the signing address; funds must be in EOA on CLOB
+    #   1 = Poly Proxy — funder is the Polymarket Proxy contract (Magic Link users)
+    #   2 = Gnosis Safe — funder is the Safe contract deployed by Polymarket on first login
+    #
+    # MetaMask users created after ~2024 get a Gnosis Safe (type 2).
+    # POLYMARKET_WALLET_ADDRESS must be the Safe address (polymarket.com/settings), NOT the EOA.
+    # The EOA private key is still used for signing — signer = EOA, maker = Safe.
     sig_type = int(getattr(cfg, "clob_signature_type", 0) or 0)
 
     if _l2_creds_filled(cfg):

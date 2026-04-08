@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from pathlib import Path
 from datetime import datetime, timezone
@@ -12,8 +13,19 @@ import structlog
 from ..config import Settings
 from ..storage.db import Database
 from .exchange import PaperExchange
+from .fees import taker_fee_on_notional
 from .market_data import ClobMarketDataService
-from .models import ArbEvent, ArbOpportunity, BasketRecord, OrderIntent, TokenBook, utc_now
+from .models import (
+    ArbEvent,
+    ArbOpportunity,
+    BasketRecord,
+    OrderIntent,
+    OrderRecord,
+    OutcomeMarket,
+    PositionRecord,
+    TokenBook,
+    utc_now,
+)
 from .pricing import OpportunityScanner
 from .repository import ArbRepository
 from .risk import ArbRiskManager
@@ -80,6 +92,7 @@ class ArbEngine:
         self._initialized = False
         self._current_cycle_pct: float | None = 0.0
         self._current_cycle_step = "idle"
+        self._complete_set_hold_log_mono: dict[str, float] = {}
 
     @property
     def risk(self) -> ArbRiskManager:
@@ -99,17 +112,39 @@ class ArbEngine:
                 )
             if not self._config.allow_taker_execution:
                 raise ValueError("ARB_LIVE_EXECUTION requires ALLOW_TAKER_EXECUTION=true (FOK taker legs)")
+            if self._config.paper_spread_penalty_bps > 0:
+                logger.warning(
+                    "arb_engine.live_with_paper_spread_penalty",
+                    paper_spread_penalty_bps=self._config.paper_spread_penalty_bps,
+                    note="Complete-set scanner edges include this penalty; use PAPER_SPREAD_PENALTY_BPS=0 for live.",
+                )
         await self._legacy_db.init()
         await self._repository.init()
         await self._risk.hydrate_from_db(self._legacy_db, self._exchange)
         runtime_state = await self._repository.load_runtime_state()
+        positions = await self._repository.load_positions()
         if runtime_state:
-            positions = await self._repository.load_positions()
             self._exchange.restore_state(runtime_state, positions)
-            self._baskets = {
-                basket.basket_id: basket
-                for basket in await self._repository.load_active_baskets()
-            }
+        elif positions:
+            self._exchange.restore_state(
+                {
+                    "cash": 0.0,
+                    "contributed_capital": 0.0,
+                    "realized_pnl": 0.0,
+                    "fees_paid": 0.0,
+                    "rebates_earned": 0.0,
+                },
+                positions,
+            )
+            logger.warning(
+                "arb_engine.init_positions_without_runtime_state",
+                positions=len(positions),
+                note="Restored positions only; arb_runtime_state row missing — cash/PnL baseline may be wrong until next trade.",
+            )
+        self._baskets = {
+            basket.basket_id: basket
+            for basket in await self._repository.load_active_baskets()
+        }
         self._risk.cooldowns = await self._repository.load_cooldowns()
         await self._repository.replace_positions(self._exchange.get_positions())
         await self._persist_runtime_state()
@@ -186,6 +221,7 @@ class ArbEngine:
                 await self._repository.record_book(book)
 
             auto_settled = await self._auto_settle_resolved_events_locked()
+            complete_set_unwound = await self._maybe_unwind_complete_set_baskets()
             diagnostics = self._scanner.cycle_diagnostics(events, real_books)
             opportunities = self._scanner.scan(events, real_books)
             self._opportunities = opportunities
@@ -201,13 +237,6 @@ class ArbEngine:
 
             for opportunity in opportunities:
                 open_baskets = self._open_basket_count()
-                if self._config.arb_live_execution and opportunity.requires_conversion:
-                    await self._repository.record_opportunity(
-                        opportunity,
-                        decision="rejected",
-                        reason="neg-risk on-chain conversion not available in proxy-wallet mode",
-                    )
-                    continue
                 approved, reason = self._risk.approve(
                     opportunity,
                     self._exchange,
@@ -230,8 +259,17 @@ class ArbEngine:
                     self._risk.record_execution(opportunity)
 
             from ..alpha.overlay import run_directional_overlay
+            from ..alpha.trader_follow import run_trader_follow
 
             await run_directional_overlay(
+                self,
+                events,
+                books,
+                real_books,
+                len(opportunities),
+                executed,
+            )
+            await run_trader_follow(
                 self,
                 events,
                 books,
@@ -248,6 +286,7 @@ class ArbEngine:
                 "tracked_events": len(events),
                 "tracked_books": len(books),
                 "auto_settled": auto_settled,
+                "complete_set_unwound": complete_set_unwound,
                 "opportunities": len(opportunities),
                 "executed": executed,
                 "diagnostics": diagnostics,
@@ -258,6 +297,7 @@ class ArbEngine:
                 tracked_events=len(events),
                 opportunities=len(opportunities),
                 executed=executed,
+                complete_set_unwound=complete_set_unwound,
                 books_clob=bsrc["books_clob"],
                 books_synthetic=bsrc["books_synthetic"],
                 books_other=bsrc["books_other"],
@@ -573,6 +613,542 @@ class ArbEngine:
         )
         await self._repository.save_cooldowns(self._risk.cooldowns)
 
+    def _log_complete_set_hold(self, *, dedupe_key: str, reason: str, **fields: Any) -> None:
+        interval_sec = float(self._config.arb_log_complete_set_hold_interval_seconds)
+        if interval_sec <= 0:
+            return
+        now = time.monotonic()
+        k = f"{dedupe_key}:{reason}"
+        last = self._complete_set_hold_log_mono.get(k, 0.0)
+        if now - last < interval_sec:
+            return
+        self._complete_set_hold_log_mono[k] = now
+        logger.info("arb_engine.complete_set_hold", reason=reason, dedupe_key=dedupe_key, **fields)
+
+    def _complete_set_unwind_block_detail(
+        self,
+        leg_rows: list[tuple[OutcomeMarket, PositionRecord]],
+    ) -> tuple[str, dict[str, Any]] | None:
+        """If unwind metrics cannot be computed, return (reason, extra) for logging."""
+        unified_size = min(p.size for _, p in leg_rows)
+        if unified_size <= 1e-9:
+            return "zero_unified_size", {"unified_size": unified_size}
+        for market, _pos in leg_rows:
+            book = self._exchange.book_for_token(market.yes_token_id)
+            if book is None:
+                return "no_book_for_leg", {
+                    "token_id": market.yes_token_id,
+                    "market_id": market.market_id,
+                }
+            if book.best_bid <= 0:
+                return "no_bid", {"token_id": market.yes_token_id, "source": book.source}
+            if book.source != "clob":
+                return "non_clob_book", {"token_id": market.yes_token_id, "source": book.source}
+        cost = sum(pos.avg_price * unified_size for _, pos in leg_rows)
+        if cost <= 1e-12:
+            return "zero_cost", {}
+        return None
+
+    def _complete_set_leg_rows(self, event: ArbEvent) -> list[tuple[OutcomeMarket, PositionRecord]] | None:
+        """YES positions for every outcome market, or None if incomplete."""
+        by_token = {p.token_id: p for p in self._exchange.get_positions()}
+        leg_rows: list[tuple[OutcomeMarket, PositionRecord]] = []
+        for market in event.markets:
+            pos = by_token.get(market.yes_token_id)
+            if pos is None or pos.contract_side != "YES":
+                return None
+            leg_rows.append((market, pos))
+        if len(leg_rows) != len(event.markets):
+            return None
+        return leg_rows
+
+    def _complete_set_unwind_metrics(
+        self,
+        leg_rows: list[tuple[OutcomeMarket, PositionRecord]],
+    ) -> tuple[float, float, float, float, float, float] | None:
+        """
+        Returns (unified_size, bid_sum, net_after_fees, cost, profit_est, profit_bps)
+        or None if books unusable.
+        """
+        cfg = self._config
+        unified_size = min(p.size for _, p in leg_rows)
+        if unified_size <= 1e-9:
+            return None
+
+        bid_sum = 0.0
+        net_after_fees = 0.0
+        cost = 0.0
+        for market, pos in leg_rows:
+            book = self._exchange.book_for_token(market.yes_token_id)
+            if book is None or book.best_bid <= 0 or book.source != "clob":
+                return None
+            bid_sum += book.best_bid
+            leg_gross = unified_size * book.best_bid
+            fee = taker_fee_on_notional(leg_gross, book.fees_enabled, cfg.paper_taker_fee_bps)
+            net_after_fees += leg_gross - fee
+            cost += pos.avg_price * unified_size
+
+        if cost <= 1e-12:
+            return None
+        profit_est = net_after_fees - cost
+        profit_bps = (profit_est / cost) * 10000.0
+        return unified_size, bid_sum, net_after_fees, cost, profit_est, profit_bps
+
+    def _should_unwind_complete_set_now(
+        self,
+        *,
+        net_after_fees: float,
+        bid_sum: float,
+        cost: float,
+        unified_size: float,
+        profit_est: float,
+        profit_bps: float,
+    ) -> bool:
+        cfg = self._config
+        if cfg.complete_set_unwind_vs_resolution:
+            resolution_usd = unified_size * 1.0
+            eps = max(0.0, float(cfg.complete_set_unwind_vs_resolution_epsilon_usd))
+            return net_after_fees + 1e-9 >= resolution_usd - eps
+
+        min_sum = float(cfg.complete_set_unwind_min_bid_sum)
+        min_profit_bps = float(cfg.complete_set_unwind_min_profit_bps)
+        min_gross_bps = float(cfg.complete_set_unwind_min_gross_recovery_bps)
+        min_est_net = float(cfg.complete_set_unwind_min_est_net_usd)
+        stop_bps = float(cfg.complete_set_unwind_stop_loss_bps)
+
+        bid_ok = min_sum > 0 and bid_sum >= min_sum
+        profit_ok = (
+            min_profit_bps > 0
+            and profit_bps >= min_profit_bps
+            and profit_est >= min_est_net
+        )
+        gross_recovery_bps = ((bid_sum * unified_size) - cost) / cost * 10000.0
+        gross_ok = (
+            min_gross_bps > 0
+            and gross_recovery_bps >= min_gross_bps
+            and profit_est >= min_est_net
+        )
+        stop_ok = False
+        if stop_bps > 0 and cost > 1e-12 and profit_est < 0:
+            loss_bps = (-profit_est / cost) * 10000.0
+            stop_ok = loss_bps >= stop_bps
+
+        min_any = float(cfg.complete_set_unwind_min_any_profit_usd)
+        any_profit_ok = min_any > 0 and profit_est >= min_any
+
+        if (
+            min_sum <= 0
+            and min_profit_bps <= 0
+            and min_gross_bps <= 0
+            and stop_bps <= 0
+            and min_any <= 0
+        ):
+            return False
+        return bid_ok or profit_ok or gross_ok or stop_ok or any_profit_ok
+
+    async def _execute_complete_set_unwind_sells(
+        self,
+        *,
+        basket_id: str,
+        opportunity_id: str,
+        event_id: str,
+        leg_rows: list[tuple[OutcomeMarket, PositionRecord]],
+        unified_size: float,
+    ) -> list[OrderRecord]:
+        sell_orders: list[OrderRecord] = []
+        for market, _pos in leg_rows:
+            book = self._exchange.book_for_token(market.yes_token_id)
+            if book is None:
+                raise RuntimeError(f"missing book for {market.yes_token_id}")
+            intent = OrderIntent(
+                basket_id=basket_id,
+                opportunity_id=opportunity_id,
+                token_id=market.yes_token_id,
+                market_id=market.market_id,
+                event_id=event_id,
+                contract_side="YES",
+                side="SELL",
+                price=book.best_bid,
+                size=unified_size,
+                order_type="fak",
+                maker_or_taker="taker",
+                fees_enabled=book.fees_enabled,
+                metadata={"reason": "complete_set_auto_unwind"},
+            )
+            order, fills = self._exchange.place_order(intent)
+            await self._repository.record_order(order)
+            for fill in fills:
+                await self._repository.record_fill(fill)
+            sell_orders.append(order)
+        return sell_orders
+
+    async def _maybe_unwind_complete_set_baskets(self) -> int:
+        """
+        FAK-sell full YES complete sets when bid / net / gross / any-profit / stop-loss triggers fire.
+
+        This is rule-based (thresholds), not an optimal "maximize exit PnL vs resolution" solver.
+        If no trigger fires, the basket is held — including through resolution when appropriate.
+
+        1) OPEN baskets (strategy complete_set).
+        2) Orphan positions: same event has a full YES set in the exchange ledger but no OPEN
+           basket (e.g. DB reset, other process, or legacy row) — creates a synthetic basket for audit.
+
+        Requires real CLOB books. Runs unattended each cycle when not halted.
+        """
+        cfg = self._config
+        if not cfg.complete_set_auto_unwind:
+            return 0
+        if self._risk.halted:
+            return 0
+
+        min_sum = float(cfg.complete_set_unwind_min_bid_sum)
+        min_profit_bps = float(cfg.complete_set_unwind_min_profit_bps)
+        min_gross_bps = float(cfg.complete_set_unwind_min_gross_recovery_bps)
+        stop_bps = float(cfg.complete_set_unwind_stop_loss_bps)
+        min_any_usd = float(cfg.complete_set_unwind_min_any_profit_usd)
+        if not cfg.complete_set_unwind_vs_resolution and (
+            min_sum <= 0
+            and min_profit_bps <= 0
+            and min_gross_bps <= 0
+            and stop_bps <= 0
+            and min_any_usd <= 0
+        ):
+            return 0
+
+        unwound = 0
+        processed_event_ids: set[str] = set()
+
+        async def _finalize_one(
+            basket: BasketRecord,
+            *,
+            event_id: str,
+            leg_rows: list[tuple[OutcomeMarket, PositionRecord]],
+            unified_size: float,
+            bid_sum: float,
+            profit_est: float,
+            sell_orders: list[OrderRecord],
+            pnl_before: float,
+        ) -> None:
+            nonlocal unwound
+            min_ratio = (
+                min(o.filled_size / unified_size for o in sell_orders) if sell_orders else 0.0
+            )
+            if min_ratio < 0.99:
+                logger.warning(
+                    "arb_engine.complete_set_unwind_partial",
+                    basket_id=basket.basket_id,
+                    event_id=event_id,
+                    min_fill_ratio=round(min_ratio, 4),
+                )
+                basket.notes = (
+                    f"{basket.notes} | partial auto-unwind min_fill_ratio={min_ratio:.3f}"
+                ).strip()
+                basket.realized_net_pnl += self._exchange.realized_pnl - pnl_before
+                if basket.status == "EXECUTING":
+                    basket.status = "OPEN"
+                await self._repository.update_basket(basket)
+                await self._repository.replace_positions(self._exchange.get_positions())
+                await self._persist_runtime_state()
+                return
+
+            basket.status = "CLOSED"
+            basket.closed_at = utc_now()
+            basket.realized_net_pnl += self._exchange.realized_pnl - pnl_before
+            basket.notes = (
+                f"{basket.notes} | auto-unwind bid_sum={bid_sum:.3f} est_profit=${profit_est:.2f}"
+            ).strip()
+            await self._repository.update_basket(basket)
+            await self._repository.replace_positions(self._exchange.get_positions())
+            await self._persist_runtime_state()
+            unwound += 1
+            logger.info(
+                "arb_engine.complete_set_unwind_done",
+                basket_id=basket.basket_id,
+                event_id=event_id,
+            )
+
+        # ── Pass A: OPEN complete-set baskets ─────────────────────────────
+        for basket in list(self._baskets.values()):
+            if basket.status != "OPEN" or basket.strategy_type != "complete_set":
+                continue
+            event = self._events.get(basket.event_id)
+            if event is None or not event.markets:
+                self._log_complete_set_hold(
+                    dedupe_key=basket.basket_id,
+                    reason="event_not_in_universe",
+                    basket_id=basket.basket_id,
+                    event_id=basket.event_id,
+                    note="Event dropped from tracked universe; unwind needs event metadata + books.",
+                )
+                continue
+            leg_rows = self._complete_set_leg_rows(event)
+            if leg_rows is None:
+                self._log_complete_set_hold(
+                    dedupe_key=basket.basket_id,
+                    reason="incomplete_yes_set",
+                    basket_id=basket.basket_id,
+                    event_id=basket.event_id,
+                    note="Need a YES position on every outcome leg with equal tradeable size.",
+                )
+                continue
+            blk = self._complete_set_unwind_block_detail(leg_rows)
+            if blk is not None:
+                br, extra = blk
+                self._log_complete_set_hold(
+                    dedupe_key=basket.basket_id,
+                    reason=br,
+                    basket_id=basket.basket_id,
+                    event_id=basket.event_id,
+                    **extra,
+                )
+                continue
+            m = self._complete_set_unwind_metrics(leg_rows)
+            if m is None:
+                self._log_complete_set_hold(
+                    dedupe_key=basket.basket_id,
+                    reason="metrics_unavailable",
+                    basket_id=basket.basket_id,
+                    event_id=basket.event_id,
+                )
+                continue
+            unified_size, bid_sum, net_after_fees, cost, profit_est, profit_bps = m
+            gross_recovery_bps = ((bid_sum * unified_size) - cost) / cost * 10000.0
+            if not self._should_unwind_complete_set_now(
+                net_after_fees=net_after_fees,
+                bid_sum=bid_sum,
+                cost=cost,
+                unified_size=unified_size,
+                profit_est=profit_est,
+                profit_bps=profit_bps,
+            ):
+                vs_res = cfg.complete_set_unwind_vs_resolution
+                hold_extras: dict[str, Any] = {
+                    "bid_sum": round(bid_sum, 4),
+                    "profit_est_usd": round(profit_est, 4),
+                    "profit_bps": round(profit_bps, 2),
+                    "gross_recovery_bps": round(gross_recovery_bps, 2),
+                    "unified_size": round(unified_size, 4),
+                }
+                if vs_res:
+                    hold_extras["net_sell_after_fees_usd"] = round(net_after_fees, 4)
+                    hold_extras["resolution_payout_usd"] = round(unified_size, 4)
+                    hold_extras["vs_resolution_epsilon_usd"] = float(
+                        cfg.complete_set_unwind_vs_resolution_epsilon_usd
+                    )
+                    hold_note = (
+                        "Holding: CLOB net sell (after fees) below resolution payout minus epsilon "
+                        "(COMPLETE_SET_UNWIND_VS_RESOLUTION)."
+                    )
+                else:
+                    hold_extras["thresholds"] = {
+                        "min_bid_sum": min_sum,
+                        "min_profit_bps": min_profit_bps,
+                        "min_gross_recovery_bps": min_gross_bps,
+                        "stop_loss_bps": stop_bps,
+                        "min_any_profit_usd": min_any_usd,
+                    }
+                    hold_note = "Holding: no legacy COMPLETE_SET_UNWIND_MIN_* trigger fired."
+                self._log_complete_set_hold(
+                    dedupe_key=basket.basket_id,
+                    reason="triggers_not_met",
+                    basket_id=basket.basket_id,
+                    event_id=basket.event_id,
+                    note=hold_note,
+                    **hold_extras,
+                )
+                continue
+
+            logger.info(
+                "arb_engine.complete_set_unwind_start",
+                basket_id=basket.basket_id,
+                event_id=basket.event_id,
+                source="open_basket",
+                bid_sum=round(bid_sum, 4),
+                profit_est_usd=round(profit_est, 4),
+                profit_bps=round(profit_bps, 2),
+                unified_size=round(unified_size, 4),
+            )
+            pnl_before = self._exchange.realized_pnl
+            try:
+                sell_orders = await self._execute_complete_set_unwind_sells(
+                    basket_id=basket.basket_id,
+                    opportunity_id=basket.opportunity_id,
+                    event_id=basket.event_id,
+                    leg_rows=leg_rows,
+                    unified_size=unified_size,
+                )
+            except Exception as exc:
+                logger.error(
+                    "arb_engine.complete_set_unwind_failed",
+                    basket_id=basket.basket_id,
+                    event_id=basket.event_id,
+                    error=str(exc),
+                )
+                continue
+
+            processed_event_ids.add(basket.event_id)
+            await _finalize_one(
+                basket,
+                event_id=basket.event_id,
+                leg_rows=leg_rows,
+                unified_size=unified_size,
+                bid_sum=bid_sum,
+                profit_est=profit_est,
+                sell_orders=sell_orders,
+                pnl_before=pnl_before,
+            )
+
+        # ── Pass B: orphan complete sets (positions only, same event not processed) ──
+        position_event_ids = {
+            p.event_id for p in self._exchange.get_positions() if p.contract_side == "YES" and p.size > 1e-9
+        }
+        for event_id in sorted(position_event_ids):
+            if event_id in processed_event_ids:
+                continue
+            event = self._events.get(event_id)
+            if event is None or not event.markets:
+                self._log_complete_set_hold(
+                    dedupe_key=f"orphan:{event_id}",
+                    reason="event_not_in_universe",
+                    event_id=event_id,
+                    note="Orphan complete set: event not in universe.",
+                )
+                continue
+            leg_rows = self._complete_set_leg_rows(event)
+            if leg_rows is None:
+                self._log_complete_set_hold(
+                    dedupe_key=f"orphan:{event_id}",
+                    reason="incomplete_yes_set",
+                    event_id=event_id,
+                )
+                continue
+            blk = self._complete_set_unwind_block_detail(leg_rows)
+            if blk is not None:
+                br, extra = blk
+                self._log_complete_set_hold(
+                    dedupe_key=f"orphan:{event_id}",
+                    reason=br,
+                    event_id=event_id,
+                    **extra,
+                )
+                continue
+            m = self._complete_set_unwind_metrics(leg_rows)
+            if m is None:
+                self._log_complete_set_hold(
+                    dedupe_key=f"orphan:{event_id}",
+                    reason="metrics_unavailable",
+                    event_id=event_id,
+                )
+                continue
+            unified_size, bid_sum, net_after_fees, cost, profit_est, profit_bps = m
+            gross_recovery_bps = ((bid_sum * unified_size) - cost) / cost * 10000.0
+            if not self._should_unwind_complete_set_now(
+                net_after_fees=net_after_fees,
+                bid_sum=bid_sum,
+                cost=cost,
+                unified_size=unified_size,
+                profit_est=profit_est,
+                profit_bps=profit_bps,
+            ):
+                vs_res = cfg.complete_set_unwind_vs_resolution
+                o_extras: dict[str, Any] = {
+                    "bid_sum": round(bid_sum, 4),
+                    "profit_est_usd": round(profit_est, 4),
+                    "profit_bps": round(profit_bps, 2),
+                    "gross_recovery_bps": round(gross_recovery_bps, 2),
+                    "unified_size": round(unified_size, 4),
+                }
+                if vs_res:
+                    o_extras["net_sell_after_fees_usd"] = round(net_after_fees, 4)
+                    o_extras["resolution_payout_usd"] = round(unified_size, 4)
+                    o_extras["vs_resolution_epsilon_usd"] = float(
+                        cfg.complete_set_unwind_vs_resolution_epsilon_usd
+                    )
+                    o_note = "Orphan set: holding — CLOB net below resolution minus epsilon."
+                else:
+                    o_extras["thresholds"] = {
+                        "min_bid_sum": min_sum,
+                        "min_profit_bps": min_profit_bps,
+                        "min_gross_recovery_bps": min_gross_bps,
+                        "stop_loss_bps": stop_bps,
+                        "min_any_profit_usd": min_any_usd,
+                    }
+                    o_note = "Orphan set: holding until a legacy threshold fires."
+                self._log_complete_set_hold(
+                    dedupe_key=f"orphan:{event_id}",
+                    reason="triggers_not_met",
+                    event_id=event_id,
+                    note=o_note,
+                    **o_extras,
+                )
+                continue
+
+            any_open = next(
+                (b for b in self._baskets.values() if b.event_id == event_id and b.status == "OPEN"),
+                None,
+            )
+            if any_open is not None:
+                continue
+
+            orphan = BasketRecord(
+                basket_id=f"orphan-cs-{uuid.uuid4().hex[:10]}",
+                opportunity_id=f"pos-sync-{event_id}",
+                event_id=event_id,
+                strategy_type="complete_set",
+                status="EXECUTING",
+                capital_reserved=float(cost),
+                target_net_edge_bps=0.0,
+                notes="Auto: full YES set in ledger without OPEN basket — synthetic row for unwind audit",
+            )
+            self._baskets[orphan.basket_id] = orphan
+            await self._repository.create_basket(orphan)
+
+            logger.info(
+                "arb_engine.complete_set_unwind_start",
+                basket_id=orphan.basket_id,
+                event_id=event_id,
+                source="orphan_positions",
+                bid_sum=round(bid_sum, 4),
+                profit_est_usd=round(profit_est, 4),
+                profit_bps=round(profit_bps, 2),
+                unified_size=round(unified_size, 4),
+            )
+            pnl_before = self._exchange.realized_pnl
+            try:
+                sell_orders = await self._execute_complete_set_unwind_sells(
+                    basket_id=orphan.basket_id,
+                    opportunity_id=orphan.opportunity_id,
+                    event_id=event_id,
+                    leg_rows=leg_rows,
+                    unified_size=unified_size,
+                )
+            except Exception as exc:
+                logger.error(
+                    "arb_engine.complete_set_unwind_failed",
+                    basket_id=orphan.basket_id,
+                    event_id=event_id,
+                    error=str(exc),
+                )
+                orphan.status = "FAILED"
+                orphan.closed_at = utc_now()
+                orphan.notes = f"{orphan.notes} | unwind_error: {exc}"[:2000]
+                await self._repository.update_basket(orphan)
+                continue
+
+            processed_event_ids.add(event_id)
+            await _finalize_one(
+                orphan,
+                event_id=event_id,
+                leg_rows=leg_rows,
+                unified_size=unified_size,
+                bid_sum=bid_sum,
+                profit_est=profit_est,
+                sell_orders=sell_orders,
+                pnl_before=pnl_before,
+            )
+
+        return unwound
+
     async def _auto_settle_resolved_events_locked(self) -> int:
         if not self._config.auto_settle_resolved_events:
             return 0
@@ -583,8 +1159,8 @@ class ArbEngine:
         settled = 0
         tracked_event_ids = self._tracked_event_ids_for_resolution()
         for event_id in tracked_event_ids:
-            if event_id in self._active_event_ids:
-                continue
+            # Do not skip while the event is still in the refreshed universe: Gamma often keeps
+            # resolved events in the active list briefly, and we only iterate events we hold.
             known_event = self._events.get(event_id)
             try:
                 resolved_event, resolution_market_id, source = await lookup_resolution(

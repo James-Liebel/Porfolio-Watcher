@@ -196,6 +196,84 @@ class Settings(BaseSettings):
     auto_settle_resolved_events: bool = Field(
         default=True, alias="AUTO_SETTLE_RESOLVED_EVENTS"
     )
+    # Sell all YES legs of an OPEN complete-set basket on the CLOB when triggers fire (live + paper).
+    complete_set_auto_unwind: bool = Field(
+        default=True,
+        alias="COMPLETE_SET_AUTO_UNWIND",
+        description=(
+            "If true, each cycle may FAK-sell every YES leg of a complete-set basket when bid prices "
+            "imply a good exit (near $1 per set and/or min profit vs cost). Converts tokens back to USDC on Polymarket."
+        ),
+    )
+    complete_set_unwind_vs_resolution: bool = Field(
+        default=True,
+        alias="COMPLETE_SET_UNWIND_VS_RESOLUTION",
+        description=(
+            "If true, unwind only when modeled net USDC from selling all YES legs at best bid (after taker fees) "
+            ">= holding to resolution ($1 per share of unified size) minus COMPLETE_SET_UNWIND_VS_RESOLUTION_EPSILON_USD. "
+            "If false, use legacy COMPLETE_SET_UNWIND_MIN_* thresholds (OR logic)."
+        ),
+    )
+    complete_set_unwind_vs_resolution_epsilon_usd: float = Field(
+        default=0.03,
+        alias="COMPLETE_SET_UNWIND_VS_RESOLUTION_EPSILON_USD",
+        description=(
+            "Total USD slack vs resolution payout when using vs_resolution mode (fee/rounding). "
+            "Sell when net_after_fees >= unified_size - epsilon."
+        ),
+    )
+    # Sum of best bids across all YES legs; at 1.0 the set can be sold for ~$1/share (before fees).
+    complete_set_unwind_min_bid_sum: float = Field(
+        default=0.993,
+        alias="COMPLETE_SET_UNWIND_MIN_BID_SUM",
+        description="Trigger unwind when sum(best_bid) for all YES legs >= this (0 = disable this trigger).",
+    )
+    complete_set_unwind_min_profit_bps: float = Field(
+        default=75.0,
+        alias="COMPLETE_SET_UNWIND_MIN_PROFIT_BPS",
+        description=(
+            "Also trigger when estimated net sell proceeds exceed cost by at least this many bps (0 = disable)."
+        ),
+    )
+    # Gross: (sum(best_bid)*size - cost) / cost — catches exits when bids beat your entry before fees eat edge.
+    complete_set_unwind_min_gross_recovery_bps: float = Field(
+        default=35.0,
+        alias="COMPLETE_SET_UNWIND_MIN_GROSS_RECOVERY_BPS",
+        description="Also trigger on gross bid recovery vs cost (0 = disable). Helps exit before sum(bids) reaches ~$1.",
+    )
+    complete_set_unwind_min_est_net_usd: float = Field(
+        default=0.0,
+        alias="COMPLETE_SET_UNWIND_MIN_EST_NET_USD",
+        description=(
+            "For profit/gross unwind triggers only: require estimated net vs cost (after taker fees on bids) "
+            ">= this USD. Slightly negative values (e.g. -0.35) allow exits when the book is favorable but "
+            "fee rounding would show a small paper loss. bid_sum trigger ignores this."
+        ),
+    )
+    complete_set_unwind_stop_loss_bps: float = Field(
+        default=0.0,
+        alias="COMPLETE_SET_UNWIND_STOP_LOSS_BPS",
+        description=(
+            "If >0 and estimated net vs cost is negative, unwind when loss/cost in bps >= this (0 = off). "
+            "Caps drawdown on stuck complete-set baskets."
+        ),
+    )
+    complete_set_unwind_min_any_profit_usd: float = Field(
+        default=0.0,
+        alias="COMPLETE_SET_UNWIND_MIN_ANY_PROFIT_USD",
+        description=(
+            "If >0, unwind when estimated net sell vs cost (after taker fees on best bids) is at least this "
+            "many USD — lower bar than MIN_PROFIT_BPS. 0 = disabled. Requires CLOB books on all legs."
+        ),
+    )
+    arb_log_complete_set_hold_interval_seconds: float = Field(
+        default=0.0,
+        alias="ARB_LOG_COMPLETE_SET_HOLD_INTERVAL_SECONDS",
+        description=(
+            "If >0, emit arb_engine.complete_set_hold at most this often per basket/event when a complete "
+            "set is held (triggers not met or books block unwind). 0 = only log blocking issues (unthrottled)."
+        ),
+    )
     replay_output_dir: str = Field(default="data/replays", alias="REPLAY_OUTPUT_DIR")
     category_allowlist: str = Field(default="", alias="CATEGORY_ALLOWLIST")
     category_blocklist: str = Field(default="", alias="CATEGORY_BLOCKLIST")
@@ -209,6 +287,14 @@ class Settings(BaseSettings):
     # 0 = disabled. Drop events resolving sooner than this many hours (lower bound).
     universe_min_hours_to_resolution: float = Field(
         default=0.0, alias="UNIVERSE_MIN_HOURS_TO_RESOLUTION"
+    )
+    universe_prefer_shorter_resolution: bool = Field(
+        default=False,
+        alias="UNIVERSE_PREFER_SHORTER_RESOLUTION",
+        description=(
+            "When ranking events for MAX_TRACKED_EVENTS, break ties by sooner endDate (faster capital return). "
+            "Still respects UNIVERSE_*_HOURS_TO_RESOLUTION filters."
+        ),
     )
     # Log per-cycle scanner diagnostics (near-miss edges, structural counts) at INFO.
     arb_log_cycle_diagnostics: bool = Field(default=True, alias="ARB_LOG_CYCLE_DIAGNOSTICS")
@@ -276,6 +362,85 @@ class Settings(BaseSettings):
             "If true, blend Ollama / OpenAI-compatible news probability (predict_news_llm) "
             "with the keyword branch; falls back to keywords on LLM errors. Paper overlay only."
         ),
+    )
+
+    # ── Optional trader-follow sleeve (Data API leaderboard + public trades) ──
+    enable_trader_follow: bool = Field(
+        default=False,
+        alias="ENABLE_TRADER_FOLLOW",
+        description=(
+            "Poll Polymarket Data API for top PnL wallets and recent public trades; mirror a scaled "
+            "slice when the outcome token is in the tracked universe and books are CLOB. "
+            "High risk: not arbitrage. Live requires TRADER_FOLLOW_ALLOW_LIVE=true."
+        ),
+    )
+    trader_follow_data_api_base: str = Field(
+        default="https://data-api.polymarket.com",
+        alias="TRADER_FOLLOW_DATA_API_BASE",
+    )
+    trader_follow_leaderboard_category: str = Field(
+        default="OVERALL",
+        alias="TRADER_FOLLOW_LEADERBOARD_CATEGORY",
+    )
+    trader_follow_time_period: str = Field(
+        default="WEEK",
+        alias="TRADER_FOLLOW_TIME_PERIOD",
+        description="DAY, WEEK, MONTH, or ALL (Polymarket leaderboard).",
+    )
+    trader_follow_order_by: str = Field(default="PNL", alias="TRADER_FOLLOW_ORDER_BY")
+    trader_follow_top_wallets: int = Field(default=8, alias="TRADER_FOLLOW_TOP_WALLETS", ge=1, le=50)
+    trader_follow_wallets_extra: str = Field(
+        default="",
+        alias="TRADER_FOLLOW_WALLETS_EXTRA",
+        description="Comma-separated 0x addresses always included after leaderboard fetch.",
+    )
+    trader_follow_trades_per_wallet: int = Field(
+        default=30,
+        alias="TRADER_FOLLOW_TRADES_PER_WALLET",
+        ge=1,
+        le=500,
+    )
+    trader_follow_every_n_cycles: int = Field(default=2, alias="TRADER_FOLLOW_EVERY_N_CYCLES", ge=1)
+    trader_follow_only_when_no_arb: bool = Field(
+        default=True,
+        alias="TRADER_FOLLOW_ONLY_WHEN_NO_ARB",
+        description="If true, run only when this cycle found no opportunities and executed no structural arb.",
+    )
+    trader_follow_max_notional: float = Field(default=12.0, alias="TRADER_FOLLOW_MAX_NOTIONAL")
+    trader_follow_min_leader_notional: float = Field(
+        default=250.0,
+        alias="TRADER_FOLLOW_MIN_LEADER_NOTIONAL",
+        description="Skip leader fills smaller than this USD (reduces noise).",
+    )
+    trader_follow_size_fraction: float = Field(
+        default=0.0008,
+        alias="TRADER_FOLLOW_SIZE_FRACTION",
+    )
+    trader_follow_max_trade_age_seconds: int = Field(
+        default=1200,
+        alias="TRADER_FOLLOW_MAX_TRADE_AGE_SECONDS",
+        description="Ignore leader trades older than this many seconds.",
+    )
+    trader_follow_allow_live: bool = Field(
+        default=False,
+        alias="TRADER_FOLLOW_ALLOW_LIVE",
+        description="If true with ARB_LIVE_EXECUTION, allow real CLOB copies (still not recommended default).",
+    )
+    trader_follow_max_copies_per_cycle: int = Field(default=2, alias="TRADER_FOLLOW_MAX_COPIES_PER_CYCLE", ge=1)
+    trader_follow_max_book_spread: float = Field(
+        default=0.14,
+        alias="TRADER_FOLLOW_MAX_BOOK_SPREAD",
+        description="Max (ask−bid) on the outcome token book to mirror a trade.",
+    )
+    trader_follow_cash_floor: float = Field(
+        default=40.0,
+        alias="TRADER_FOLLOW_CASH_FLOOR",
+        description="Minimum available_cash to leave after estimating copy cost (BUY).",
+    )
+    trader_follow_min_copy_notional_usd: float = Field(
+        default=2.0,
+        alias="TRADER_FOLLOW_MIN_COPY_NOTIONAL_USD",
+        description="Do not place a copy smaller than this notional.",
     )
 
     # ── Storage (multi-agent: one SQLite file per trader process) ─────────

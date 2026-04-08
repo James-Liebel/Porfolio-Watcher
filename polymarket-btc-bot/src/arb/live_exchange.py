@@ -12,7 +12,7 @@ from copy import replace
 from datetime import datetime, timezone
 
 import structlog
-from py_clob_client.clob_types import OrderArgs, OrderType
+from py_clob_client.clob_types import CreateOrderOptions, OrderArgs, OrderType
 from py_clob_client.exceptions import PolyApiException
 from py_clob_client.order_builder.constants import BUY, SELL
 
@@ -181,10 +181,15 @@ class LiveClobExchange(PaperExchange):
 
         import math as _math
 
-        # Polymarket CLOB enforces:
-        #   - price: max 2 decimal places (tick = $0.01)
-        #   - size: max 5 decimal places
-        #   - price × size must be a multiple of $0.01 (USDC maker-amount constraint)
+        # Polymarket CLOB enforces (per exchange contract validation):
+        #   - price:  max 2 decimal places (tick = $0.01)
+        #   - maker_amount (USDC spend): max 2 decimal places → price × size must be
+        #     a multiple of $0.01
+        #   - taker_amount (outcome tokens): max 4 decimal places
+        #
+        # For price p (in 2dp) and size s (in 2dp), p×s has at most 4dp.
+        # We need p×s to land on exactly 2dp.  This requires s to be a multiple of
+        # 0.01 × (100 / gcd(price_cents, 100)).
         raw_price = float(intent.price)
         raw_size = float(intent.size)
 
@@ -200,14 +205,26 @@ class LiveClobExchange(PaperExchange):
             self._orders[order.order_id] = order
             return replace(order), []
 
-        # Adjust size so that price × size is a multiple of $0.01
-        maker_usdc = round(clob_price * raw_size, 2)  # nearest $0.01
-        if maker_usdc <= 0:
+        # Compute minimum size step so that clob_price × size is always a $0.01 multiple.
+        # step = 0.01 × ⌈100 / gcd(price_cents, 100)⌉
+        price_cents = round(clob_price * 100)  # integer 1..99
+        step = 0.01 * (100 // _math.gcd(price_cents, 100))
+        clob_size = _math.floor(raw_size / step) * step
+        clob_size = round(clob_size, 2)
+
+        maker_usdc = round(clob_price * clob_size, 2)
+        if maker_usdc <= 0 or clob_size <= 0:
             order.status = "rejected"
             order.reason = f"order value < $0.01 (price={clob_price}, size={raw_size})"
             self._orders[order.order_id] = order
             return replace(order), []
-        clob_size = round(maker_usdc / clob_price, 5)
+
+        # Pass neg_risk and tick_size explicitly so the SDK routes to the correct exchange
+        # contract and validates price precision without an extra network round-trip.
+        token_meta = self._token_meta.get(intent.token_id, {})
+        is_neg_risk = token_meta.get("neg_risk") == "true"
+        tick_size = token_meta.get("tick_size", "0.01")
+        order_opts = CreateOrderOptions(neg_risk=is_neg_risk, tick_size=tick_size)
 
         try:
             signed = self._client.create_order(
@@ -217,7 +234,7 @@ class LiveClobExchange(PaperExchange):
                     size=clob_size,
                     side=side_const,
                 ),
-                options=None,
+                options=order_opts,
             )
             resp = self._client.post_order(signed, ot)
         except PolyApiException as exc:

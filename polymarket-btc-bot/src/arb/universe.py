@@ -314,15 +314,24 @@ class GammaUniverseService:
                 )
             )
 
+        def _soon_key(event: ArbEvent) -> float:
+            if not self._config.universe_prefer_shorter_resolution:
+                return 0.0
+            secs = _seconds_to_expiry(event.end_time)
+            if secs is None or secs < 0:
+                return -1e15
+            return -float(secs)
+
         def _rank(event: ArbEvent) -> tuple[int | float, ...]:
+            sk = _soon_key(event)
             if self._config.universe_prefer_neg_risk:
                 nr = (
                     1
                     if (event.neg_risk or event.enable_neg_risk) and not event.neg_risk_augmented
                     else 0
                 )
-                return (nr, event.liquidity)
-            return (event.liquidity,)
+                return (nr, event.liquidity, sk)
+            return (event.liquidity, sk)
 
         results.sort(key=_rank, reverse=True)
         return results[: self._config.max_tracked_events]

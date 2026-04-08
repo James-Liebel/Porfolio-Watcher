@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import aiosqlite
@@ -197,6 +197,16 @@ CREATE TABLE IF NOT EXISTS arb_cooldowns (
 );
 """
 
+_CREATE_TRADER_FOLLOW_SEEN = """
+CREATE TABLE IF NOT EXISTS arb_trader_follow_seen (
+    tx_hash       TEXT PRIMARY KEY,
+    leader_wallet TEXT,
+    token_id      TEXT,
+    side          TEXT,
+    created_at    TEXT NOT NULL
+);
+"""
+
 
 class ArbRepository:
     def __init__(self, path: str = _DB_PATH) -> None:
@@ -218,10 +228,45 @@ class ArbRepository:
                 _CREATE_SETTLEMENTS,
                 _CREATE_RUNTIME_STATE,
                 _CREATE_COOLDOWNS,
+                _CREATE_TRADER_FOLLOW_SEEN,
             ):
                 await db.execute(sql)
             await db.commit()
         logger.info("arb_repository.initialized", path=self._path)
+
+    async def trader_follow_seen(self, tx_hash: str) -> bool:
+        async with aiosqlite.connect(self._path) as db:
+            cur = await db.execute(
+                "SELECT 1 FROM arb_trader_follow_seen WHERE tx_hash = ? LIMIT 1",
+                (tx_hash,),
+            )
+            row = await cur.fetchone()
+            return row is not None
+
+    async def record_trader_follow_seen(
+        self,
+        *,
+        tx_hash: str,
+        leader_wallet: str,
+        token_id: str,
+        side: str,
+    ) -> None:
+        async with aiosqlite.connect(self._path) as db:
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO arb_trader_follow_seen
+                (tx_hash, leader_wallet, token_id, side, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    tx_hash,
+                    leader_wallet,
+                    token_id,
+                    side,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            await db.commit()
 
     async def upsert_event(self, event: ArbEvent) -> None:
         sql = """

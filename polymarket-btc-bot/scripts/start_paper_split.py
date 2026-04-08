@@ -40,6 +40,15 @@ _SHARED_ARB = {
     "ARB_MIN_EXPECTED_PROFIT_USD": "0.1",
     # Wider universe scan (advisor tuning): more Gamma rows before CLOB book cap.
     "MAX_TRACKED_EVENTS": "500",
+    # Mirror scaled copies of public leaderboard trades (paper only unless ALLOW_LIVE).
+    "ENABLE_TRADER_FOLLOW": "true",
+    "TRADER_FOLLOW_ALLOW_LIVE": "false",
+    "TRADER_FOLLOW_ONLY_WHEN_NO_ARB": "true",
+    "TRADER_FOLLOW_EVERY_N_CYCLES": "3",
+    "TRADER_FOLLOW_MAX_NOTIONAL": "10",
+    "TRADER_FOLLOW_CASH_FLOOR": "22",
+    "TRADER_FOLLOW_MIN_LEADER_NOTIONAL": "150",
+    "TRADER_FOLLOW_TOP_WALLETS": "6",
 }
 
 

@@ -74,18 +74,24 @@ class PaperExchange:
     def update_universe(self, events: list[ArbEvent]) -> None:
         meta: dict[str, dict[str, str]] = dict(self._token_meta)
         for event in events:
+            neg_risk_flag = "true" if event.neg_risk else "false"
             for market in event.markets:
+                tick = str(market.tick_size or 0.01)
                 meta[market.yes_token_id] = {
                     "market_id": market.market_id,
                     "event_id": event.event_id,
                     "outcome_name": market.outcome_name,
                     "contract_side": "YES",
+                    "neg_risk": neg_risk_flag,
+                    "tick_size": tick,
                 }
                 meta[market.no_token_id] = {
                     "market_id": market.market_id,
                     "event_id": event.event_id,
                     "outcome_name": market.outcome_name,
                     "contract_side": "NO",
+                    "neg_risk": neg_risk_flag,
+                    "tick_size": tick,
                 }
         self._token_meta = meta
 

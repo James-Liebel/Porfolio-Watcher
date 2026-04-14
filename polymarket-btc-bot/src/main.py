@@ -66,7 +66,7 @@ async def main() -> None:
             return
         shutting_down["value"] = True
         log.info("shutdown.received", signal=signal_name)
-        await engine.risk.halt(f"Shutdown requested: {signal_name}")
+        engine.risk.halt(f"Shutdown requested: {signal_name}")
         await engine.shutdown()
         current = asyncio.current_task()
         tasks = [task for task in asyncio.all_tasks() if task is not current]

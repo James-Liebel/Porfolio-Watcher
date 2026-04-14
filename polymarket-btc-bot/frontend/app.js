@@ -87,6 +87,10 @@ function renderHeader(summary) {
   if (summary.trading_halted) {
     pill.className = "status-pill status-halted";
     label.textContent = `Halted — ${summary.halt_reason || "unknown reason"}`;
+  } else if (summary.operator_override_automatic_stops) {
+    pill.className = "status-pill status-running";
+    label.textContent =
+      "Running — manual resume (drawdown/trailing/session auto-stops off until Halt)";
   } else {
     pill.className = "status-pill status-running";
     label.textContent = "Running";
@@ -496,7 +500,11 @@ async function apiFetch(path, { method = "GET", body } = {}) {
   };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(API_BASE + path, opts);
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+  }
+  return data;
 }
 
 function startCountdown() {

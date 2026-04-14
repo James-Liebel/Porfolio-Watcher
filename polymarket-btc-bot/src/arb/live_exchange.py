@@ -102,7 +102,8 @@ class LiveClobExchange(PaperExchange):
         """
         Align internal `cash` with Polymarket-reported spendable collateral so redeems/deposits off-bot
         are visible to risk and the dashboard. Preserves reserved-cash locks: cash = clob_free + reserved.
-        When the sync increases cash (external credit), bumps contributed_capital by the same delta.
+        Does not change `contributed_capital` (CLOB cash moves include PnL, redeems, and sync noise —
+        contributed stays INITIAL_BANKROLL + recorded deposits).
         """
         fetched = self._fetch_clob_collateral_usdc()
         if fetched is None:
@@ -116,8 +117,8 @@ class LiveClobExchange(PaperExchange):
         # Always align ledger to CLOB + reservations when the API responds (fixes drift and FP noise).
         self.cash = new_cash
         self._last_clob_refresh_mono = time.monotonic()
-        if delta > 0.01:
-            self.contributed_capital += delta
+        # Do not bump contributed_capital on cash increases: redeems, PnL settling to cash, and
+        # sync corrections are not new contributions (those are INITIAL_BANKROLL + deposit rows).
         if abs(delta) > 1e-4:
             logger.info(
                 "live_exchange.cash_synced_from_clob",

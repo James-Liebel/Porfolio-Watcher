@@ -148,9 +148,20 @@ class ArbEngine:
         self._risk.cooldowns = await self._repository.load_cooldowns()
         await self._repository.replace_positions(self._exchange.get_positions())
         await self._maybe_sync_clob_collateral()
+        await self._reconcile_nominal_contributed_capital()
         await self._persist_runtime_state()
         self._risk.capture_session_baseline(self._exchange)
         self._initialized = True
+
+    async def _reconcile_nominal_contributed_capital(self) -> None:
+        """Set `contributed_capital` from config + deposits table — not stale `arb_runtime_state`.
+
+        Persisted snapshots could be inflated by older live CLOB sync logic or drift; this is the
+        canonical "capital committed" number for risk display and drawdown vs INITIAL_BANKROLL.
+        """
+        total_dep = await self._legacy_db.get_total_deposits()
+        nominal = float(self._config.initial_bankroll) + float(total_dep)
+        self._exchange.contributed_capital = nominal
 
     async def _maybe_sync_clob_collateral(self) -> None:
         """Live: refresh ledger cash from CLOB collateral API (deposits / redeems on Polymarket.com)."""
@@ -611,6 +622,7 @@ class ArbEngine:
     async def add_funds(self, amount: float, note: str) -> dict[str, Any]:
         async with self._cycle_lock:
             await self._risk.add_funds(amount, note, self._legacy_db, self._exchange)
+            await self._reconcile_nominal_contributed_capital()
             await self._persist_runtime_state()
             eq = round(self._exchange.equity, 4)
             return {

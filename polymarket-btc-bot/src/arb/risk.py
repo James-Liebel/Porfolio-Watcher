@@ -20,10 +20,13 @@ class ArbRiskManager:
         self._session_realized_pnl_baseline: float | None = None
         self._equity_peak_session: float = 0.0
         self._consecutive_execution_failures = 0
+        # After dashboard / API resume: skip automatic drawdown / trailing / session-loss halts until next halt().
+        self._resume_override_automatic_stops = False
 
     async def hydrate_from_db(self, db: Database, exchange) -> None:
+        # Deposits table is only "Add Money" rows; seed capital is INITIAL_BANKROLL (not stored as a deposit).
         deposits = await db.get_total_deposits()
-        starting_cash = float(deposits) if deposits > 0 else float(self._config.initial_bankroll)
+        starting_cash = float(self._config.initial_bankroll) + float(deposits)
         exchange.set_starting_cash(starting_cash)
 
     def capture_session_baseline(self, exchange) -> None:
@@ -46,6 +49,7 @@ class ArbRiskManager:
         if cap > 0 and self._consecutive_execution_failures >= cap:
             self.halted = True
             self.halt_reason = f"consecutive execution failures ({self._consecutive_execution_failures})"
+            self._resume_override_automatic_stops = False
 
     def record_execution_success(self) -> None:
         self._consecutive_execution_failures = 0
@@ -140,18 +144,30 @@ class ArbRiskManager:
         await db.insert_deposit(amount, note)
         exchange.add_funds(amount)
 
-    async def halt(self, reason: str) -> None:
+    def halt(self, reason: str) -> None:
         self.halted = True
         self.halt_reason = reason or "manual halt"
+        self._resume_override_automatic_stops = False
 
-    async def resume(self) -> None:
+    def resume(self, exchange) -> None:
+        """Operator resumed from dashboard/API: clear halt and suspend automatic equity stops.
+
+        Automatic drawdown / trailing / session-realized-loss checks stay skipped until the next
+        :meth:`halt` call. Consecutive execution-failure halts still apply and clear the override.
+        Session baselines are reset from current exchange state so a fresh /summary poll does not
+        immediately re-halt for the same condition.
+        """
         self.halted = False
         self.halt_reason = ""
-        self._equity_peak_session = 0.0
         self._consecutive_execution_failures = 0
+        self._session_realized_pnl_baseline = float(exchange.realized_pnl)
+        self._equity_peak_session = float(exchange.equity)
+        self._resume_override_automatic_stops = True
 
     def _enforce_stops(self, exchange) -> None:
         if self.halted:
+            return
+        if self._resume_override_automatic_stops:
             return
 
         baseline = max(exchange.contributed_capital, 1.0)
@@ -159,6 +175,7 @@ class ArbRiskManager:
         if drawdown >= self._config.daily_loss_cap:
             self.halted = True
             self.halt_reason = f"daily drawdown cap reached ({drawdown:.2%})"
+            self._resume_override_automatic_stops = False
             return
 
         trail = float(self._config.arb_trailing_equity_drawdown_pct)
@@ -170,6 +187,7 @@ class ArbRiskManager:
                     f"trailing equity stop (equity {exchange.equity:.2f} < peak×(1−{trail:.0%}) "
                     f"≈ {floor:.2f}; peak {self._equity_peak_session:.2f})"
                 )
+                self._resume_override_automatic_stops = False
                 return
 
         loss_cap = float(self._config.arb_session_realized_loss_usd)
@@ -180,6 +198,7 @@ class ArbRiskManager:
                 self.halt_reason = (
                     f"session realized loss cap (Δ realized {drop:.2f} vs start ≤ −{loss_cap:.2f})"
                 )
+                self._resume_override_automatic_stops = False
 
     def summary(self, exchange, open_baskets: int) -> dict[str, float | int | bool | str]:
         self._bump_equity_peak(exchange.equity)
@@ -187,6 +206,7 @@ class ArbRiskManager:
         return {
             "trading_halted": self.halted,
             "halt_reason": self.halt_reason,
+            "operator_override_automatic_stops": self._resume_override_automatic_stops,
             "available_cash": round(exchange.available_cash, 4),
             "cash": round(exchange.cash, 4),
             "equity": round(exchange.equity, 4),

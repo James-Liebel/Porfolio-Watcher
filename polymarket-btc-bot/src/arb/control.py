@@ -132,11 +132,11 @@ class ArbControlAPI:
             reason = str(payload.get("reason", "API halt"))
         except Exception:
             reason = "API halt"
-        await self._engine.risk.halt(reason)
+        self._engine.risk.halt(reason)
         return _json({"ok": True, "reason": reason})
 
     async def _resume(self, request: web.Request) -> web.Response:
-        await self._engine.risk.resume()
+        self._engine.risk.resume(self._engine.exchange)
         return _json({"ok": True})
 
     async def _run_cycle(self, request: web.Request) -> web.Response:
@@ -253,7 +253,7 @@ class ArbControlAPI:
         if asset not in supported:
             return _json({"ok": False, "error": "invalid asset"}, status=400)
         reason = f"legacy per-asset halt for {asset} (arb halts globally)"
-        await self._engine.risk.halt(reason)
+        self._engine.risk.halt(reason)
         return _json({"ok": True, "asset": asset, "halted": True, "scope": "global_arb"})
 
     async def _resume_asset_compat(self, request: web.Request) -> web.Response:
@@ -265,7 +265,7 @@ class ArbControlAPI:
         supported = ("BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "AVAX", "LINK")
         if asset not in supported:
             return _json({"ok": False, "error": "invalid asset"}, status=400)
-        await self._engine.risk.resume()
+        self._engine.risk.resume(self._engine.exchange)
         return _json({"ok": True, "asset": asset, "halted": False, "scope": "global_arb"})
 
     async def run(self) -> None:

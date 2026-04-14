@@ -1,9 +1,35 @@
 from __future__ import annotations
 
+import asyncio
+
 from src.arb.exchange import PaperExchange
 from src.arb.models import ArbOpportunity, OpportunityLeg
 from src.arb.risk import ArbRiskManager
 from src.config import Settings
+
+
+def test_hydrate_bankroll_is_initial_bankroll_plus_deposit_rows() -> None:
+    """Deposits are additive; INITIAL_BANKROLL is the seed (not duplicated in deposits table)."""
+    cfg = Settings(
+        _env_file=None,
+        initial_bankroll=100.0,
+        paper_trade=True,
+        allow_taker_execution=True,
+        max_basket_notional=100.0,
+        max_total_open_baskets=10,
+        max_event_exposure_pct=1.0,
+        opportunity_cooldown_seconds=0,
+    )
+    risk = ArbRiskManager(cfg)
+    ex = PaperExchange(cfg)
+
+    class _Db:
+        async def get_total_deposits(self) -> float:
+            return 25.0
+
+    asyncio.run(risk.hydrate_from_db(_Db(), ex))  # type: ignore[arg-type]
+    assert ex.cash == 125.0
+    assert ex.contributed_capital == 125.0
 
 
 def _opp(event_id: str = "e1", capital: float = 10.0) -> ArbOpportunity:
@@ -77,6 +103,40 @@ def test_trailing_equity_stop_halts():
     assert ok is False
     assert risk.halted
     assert "trailing" in risk.halt_reason.lower()
+
+
+def test_manual_resume_overrides_automatic_rehalt_from_summary():
+    """POST /resume clears halt; without operator override, summary() would re-halt immediately."""
+    cfg = Settings(
+        _env_file=None,
+        arb_trailing_equity_drawdown_pct=0.10,
+        daily_loss_cap=0.99,
+        allow_taker_execution=True,
+        max_basket_notional=100.0,
+        max_total_open_baskets=10,
+        max_event_exposure_pct=1.0,
+        opportunity_cooldown_seconds=0,
+    )
+    risk = ArbRiskManager(cfg)
+    ex = PaperExchange(cfg)
+    ex.set_starting_cash(100.0)
+    risk.capture_session_baseline(ex)
+    risk.begin_cycle(books_synthetic=0)
+    assert risk.approve(_opp(capital=5.0), ex, 0)[0] is True
+    ex.cash = 85.0
+    risk.begin_cycle(books_synthetic=0)
+    assert risk.approve(_opp(capital=5.0), ex, 0)[0] is False
+    assert risk.halted
+
+    risk.resume(ex)
+    assert not risk.halted
+    # Same poll path as GET /summary — previously re-triggered trailing halt immediately.
+    s = risk.summary(ex, 0)
+    assert s["trading_halted"] is False
+    assert s["operator_override_automatic_stops"] is True
+
+    risk.halt("operator")
+    assert risk.summary(ex, 0)["operator_override_automatic_stops"] is False
 
 
 def test_session_realized_loss_halts():

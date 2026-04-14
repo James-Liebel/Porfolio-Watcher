@@ -22,18 +22,21 @@ if str(ROOT) not in sys.path:
 
 from src.arb.host_tuning import cpu_count_safe, structural_bot_env_from_cpu  # noqa: E402
 
-# Single bot, ~$200 nominal — adjust INITIAL_BANKROLL here or in .env for experiments.
-# Basket slots and poll come from structural_bot_env_from_cpu("paper").
+# Single bot — full nominal bankroll in one process (tune INITIAL_BANKROLL / .env).
+# Basket slots, Gamma pages, and MAX_TRACKED_EVENTS come from structural_bot_env_from_cpu("paper").
 _SHARED_PAPER: dict[str, str] = {
     "PAPER_TRADE": "true",
     "ARB_LIVE_EXECUTION": "false",
     "ALLOW_TAKER_EXECUTION": "true",
     "CONTROL_API_TOKEN": "",
-    "INITIAL_BANKROLL": "200",
+    "INITIAL_BANKROLL": "500",
     "PAPER_TAKER_FEE_BPS": "50",
     "PAPER_SPREAD_PENALTY_BPS": "15",
-    "MAX_BASKET_NOTIONAL": "45",
-    "MAX_EVENT_EXPOSURE_PCT": "0.35",
+    "MAX_BASKET_NOTIONAL": "120",
+    "ARB_BASKET_NOTIONAL_FRACTION_OF_EQUITY": "0.34",
+    "ARB_BASKET_NOTIONAL_MIN_USD": "8",
+    "ARB_MAX_BASKET_NOTIONAL_QUALIFIED_MULTIPLIER": "1.2",
+    "MAX_EVENT_EXPOSURE_PCT": "0.48",
     "ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE": "15",
     "MIN_COMPLETE_SET_EDGE_BPS": "18",
     "MIN_NEG_RISK_EDGE_BPS": "28",

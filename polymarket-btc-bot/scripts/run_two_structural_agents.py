@@ -1,7 +1,7 @@
 """
 Legacy: two isolated paper traders + optional LLM advisor.
 
-Default paper flow is a single bot: `python scripts/start_paper_split.py`.
+Default paper flow is a single bot: `python scripts/start_paper_arb.py`.
 
 - Port 8765: structural arbitrage only ($100)
 - Port 8767: structural arb + directional overlay with Ollama news ($100)

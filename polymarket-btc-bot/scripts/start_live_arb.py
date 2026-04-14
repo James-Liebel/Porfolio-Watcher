@@ -28,14 +28,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.arb.host_tuning import cpu_count_safe, structural_bot_env_from_cpu  # noqa: E402
+
 # Overrides .env for this launcher — tuned for one bot using the full nominal bankroll.
+# Poll interval, CLOB concurrency, tracked-events cap, and basket slots are set by
+# structural_bot_env_from_cpu("live") from src/arb/host_tuning.py (CPU-aware).
 _SHARED_LIVE: dict[str, str] = {
     "PAPER_TRADE": "false",
     "ARB_LIVE_EXECUTION": "true",
     "ALLOW_TAKER_EXECUTION": "true",
     "PAPER_SPREAD_PENALTY_BPS": "0",
     "PAPER_TAKER_FEE_BPS": "50",
-    "ARB_POLL_SECONDS": "15",
     "ARB_CYCLE_ERROR_BACKOFF_SECONDS": "8",
     "MAX_BASKET_NOTIONAL": "120",
     "ARB_BASKET_NOTIONAL_FRACTION_OF_EQUITY": "0.30",
@@ -43,16 +46,12 @@ _SHARED_LIVE: dict[str, str] = {
     "ARB_MAX_BASKET_NOTIONAL_QUALIFIED_MULTIPLIER": "1.25",
     "ARB_MAX_BASKET_NOTIONAL_QUALIFIED_ABS_MAX": "0",
     "MAX_EVENT_EXPOSURE_PCT": "0.48",
-    "MAX_TOTAL_OPEN_BASKETS": "6",
-    "MAX_BASKETS_PER_STRATEGY": "4",
-    "MAX_OPPORTUNITIES_PER_CYCLE": "8",
     "ARB_CONSECUTIVE_EXECUTION_FAILURES_HALT": "2",
     "ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE": "0",
     "MAX_ARB_LEG_SPREAD_BPS": "650",
     "MIN_COMPLETE_SET_EDGE_BPS": "28",
     "MIN_NEG_RISK_EDGE_BPS": "999999",
     "ARB_MIN_EXPECTED_PROFIT_USD": "0.18",
-    "MAX_TRACKED_EVENTS": "500",
     "UNIVERSE_MAX_HOURS_TO_RESOLUTION": "0",
     "UNIVERSE_PREFER_SHORTER_RESOLUTION": "true",
     "OPPORTUNITY_COOLDOWN_SECONDS": "120",
@@ -160,7 +159,9 @@ def main() -> int:
     print("=" * 60)
     print(f"  Starting ONE live bot  bankroll ${bankroll:.2f}  port {port}")
     print(f"  SQLite: {db_path}")
-    print("  Caps: _SHARED_LIVE in scripts/start_live_arb.py (basket / exposure / concurrency).")
+    print(
+        "  Caps: _SHARED_LIVE + CPU-aware tuning (basket / exposure / poll / CLOB concurrency)."
+    )
     print("  If Safe USDC >> nominal bankroll, raise INITIAL_BANKROLL or pass --bankroll.")
     print("=" * 60)
     if args.yes:
@@ -180,6 +181,8 @@ def main() -> int:
 
     env = os.environ.copy()
     env.update(_SHARED_LIVE)
+    host_tuning = structural_bot_env_from_cpu("live")
+    env.update(host_tuning)
     env.update(
         {
             "CONTROL_API_PORT": str(port),
@@ -188,6 +191,11 @@ def main() -> int:
             "INITIAL_BANKROLL": str(round(bankroll, 2)),
             "CONTROL_API_TOKEN": os.environ.get("CONTROL_API_TOKEN", ""),
         }
+    )
+    n_cpu = cpu_count_safe()
+    print(
+        f"  Host tuning: CPUs≈{n_cpu}  CLOB_CONC={host_tuning['CLOB_BOOK_FETCH_CONCURRENCY']}  "
+        f"MAX_TRACKED_EVENTS={host_tuning['MAX_TRACKED_EVENTS']}  POLL={host_tuning['ARB_POLL_SECONDS']}s"
     )
 
     proc = subprocess.Popen(

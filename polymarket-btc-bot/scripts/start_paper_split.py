@@ -1,114 +1,15 @@
 #!/usr/bin/env python3
-"""
-Start one PAPER structural-arbitrage bot (no Ollama, no overlay, no advisor).
-
-- Port 8765, DB data/paper_arb.db (reset on each run like before).
-- Full nominal bankroll below (not split).
-
-Usage (repo root):  python scripts/start_paper_split.py
-"""
+"""Deprecated: use scripts/start_paper_arb.py (same behavior)."""
 from __future__ import annotations
 
-import os
-import subprocess
+import runpy
 import sys
-import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-
-# Single bot, ~$200 nominal — adjust INITIAL_BANKROLL here or in .env for experiments.
-_SHARED_PAPER: dict[str, str] = {
-    "PAPER_TRADE": "true",
-    "ARB_LIVE_EXECUTION": "false",
-    "ALLOW_TAKER_EXECUTION": "true",
-    "CONTROL_API_TOKEN": "",
-    "INITIAL_BANKROLL": "200",
-    "PAPER_TAKER_FEE_BPS": "50",
-    "PAPER_SPREAD_PENALTY_BPS": "15",
-    "ARB_POLL_SECONDS": "20",
-    "MAX_BASKET_NOTIONAL": "45",
-    "MAX_EVENT_EXPOSURE_PCT": "0.35",
-    "MAX_TOTAL_OPEN_BASKETS": "5",
-    "MAX_BASKETS_PER_STRATEGY": "4",
-    "MAX_OPPORTUNITIES_PER_CYCLE": "6",
-    "ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE": "15",
-    "MIN_COMPLETE_SET_EDGE_BPS": "18",
-    "MIN_NEG_RISK_EDGE_BPS": "28",
-    "ARB_MIN_EXPECTED_PROFIT_USD": "0.1",
-    "MAX_TRACKED_EVENTS": "500",
-    "ENABLE_DIRECTIONAL_OVERLAY": "false",
-    "ENABLE_TRADER_FOLLOW": "false",
-    "UNIVERSE_PREFER_NEG_RISK": "true",
-}
-
-
-def _win_kill_port(port: int) -> None:
-    ps = (
-        f"$c = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue "
-        f"| Select-Object -First 1; if ($c) {{ Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue }}"
-    )
-    subprocess.run(
-        ["powershell", "-NoProfile", "-Command", ps],
-        cwd=str(ROOT),
-        capture_output=True,
-        text=True,
-    )
-
-
-def kill_listen_ports(ports: list[int]) -> None:
-    if sys.platform == "win32":
-        for p in ports:
-            _win_kill_port(p)
-    else:
-        for p in ports:
-            subprocess.run(["sh", "-c", f"fuser -k {p}/tcp 2>/dev/null || true"], cwd=str(ROOT))
-
-
-def unlink_sqlite(path: Path) -> None:
-    for suffix in ("", "-wal", "-shm"):
-        p = Path(str(path) + suffix) if suffix else path
-        try:
-            p.unlink(missing_ok=True)
-        except OSError:
-            if p.is_file():
-                p.unlink()
-
-
-def main() -> int:
-    port = 8765
-    rel_db = "data/paper_arb.db"
-    kill_listen_ports([8765, 8767, 8780])
-    time.sleep(1.5)
-
-    (ROOT / "data").mkdir(parents=True, exist_ok=True)
-    db_path = (ROOT / rel_db).resolve()
-    unlink_sqlite(db_path)
-
-    popen_kw: dict = {}
-    if sys.platform == "win32":
-        popen_kw["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-
-    env = os.environ.copy()
-    env.update(_SHARED_PAPER)
-    env.update(
-        {
-            "CONTROL_API_PORT": str(port),
-            "ARB_SQLITE_PATH": str(db_path),
-            "AGENT_DISPLAY_NAME": "Paper — structural arb",
-        }
-    )
-
-    subprocess.Popen(
-        [sys.executable, "-m", "src"],
-        cwd=str(ROOT),
-        env=env,
-        **popen_kw,
-    )
-    print(f"Started paper structural arb on port {port}  db={rel_db}")
-    print(f"  Dashboard: http://127.0.0.1:{port}/ui/index.html")
-    return 0
-
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    print(
+        "[*] start_paper_split.py is an alias for start_paper_arb.py.\n"
+        "    Prefer: python scripts/start_paper_arb.py\n",
+        file=sys.stderr,
+    )
+    runpy.run_path(str(Path(__file__).resolve().parent / "start_paper_arb.py"), run_name="__main__")

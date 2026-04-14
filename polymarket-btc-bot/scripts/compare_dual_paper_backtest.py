@@ -38,7 +38,7 @@ from src.storage.db import Database  # noqa: E402
 
 
 def _dual_shared_settings_kwargs() -> dict[str, Any]:
-    """Match scripts/start_paper_split.py + run_two_structural_agents.py ($100 sleeve)."""
+    """Legacy dual $100/agent sleeve (see start_paper_arb.py for single-bot paper defaults)."""
     return dict(
         _env_file=None,
         paper_trade=True,

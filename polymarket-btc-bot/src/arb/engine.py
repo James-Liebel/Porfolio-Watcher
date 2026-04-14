@@ -167,6 +167,29 @@ class ArbEngine:
         except Exception as exc:
             logger.warning("arb_engine.clob_collateral_sync_failed", error=str(exc))
 
+    async def refresh_clob_for_summary_if_stale(self) -> None:
+        """Refresh CLOB balance before /summary when data is older than arb_summary_clob_stale_seconds."""
+        stale_sec = float(self._config.arb_summary_clob_stale_seconds)
+        if stale_sec <= 0:
+            return
+        if self._config.paper_trade or not self._config.arb_sync_clob_collateral_each_cycle:
+            return
+        if not self._config.arb_live_execution:
+            return
+        from .live_exchange import LiveClobExchange
+
+        if not isinstance(self._exchange, LiveClobExchange):
+            return
+        ex = self._exchange
+        now = time.monotonic()
+        last = float(getattr(ex, "_last_clob_refresh_mono", 0) or 0)
+        if last > 0 and (now - last) < stale_sec:
+            return
+        try:
+            await asyncio.to_thread(ex.sync_cash_from_clob_collateral)
+        except Exception as exc:
+            logger.warning("arb_engine.summary_clob_refresh_failed", error=str(exc))
+
     def _equity_bankroll_for_sizing(self) -> float:
         """Capital base for per-basket fraction sizing (grows with redeems after CLOB sync)."""
         ex = self._exchange
@@ -601,12 +624,16 @@ class ArbEngine:
 
     def summary(self) -> dict[str, Any]:
         payload = self._risk.summary(self._exchange, self._open_basket_count())
-        if (
-            not self._config.paper_trade
-            and hasattr(self._exchange, "last_clob_collateral_usdc")
-            and self._exchange.last_clob_collateral_usdc is not None
-        ):
-            payload["clob_collateral_usdc"] = round(float(self._exchange.last_clob_collateral_usdc), 4)
+        av = float(payload.get("available_cash", 0.0))
+        payload["spendable_cash_usdc"] = round(av, 4)
+        if not self._config.paper_trade and hasattr(self._exchange, "last_clob_collateral_usdc"):
+            lc = self._exchange.last_clob_collateral_usdc
+            if lc is not None:
+                lc_f = round(float(lc), 4)
+                payload["clob_collateral_usdc"] = lc_f
+                # Single source of truth for free USDC on Polymarket after sync.
+                payload["available_cash"] = lc_f
+                payload["spendable_cash_usdc"] = lc_f
         payload.update(
             {
                 "paper_trade": self._config.paper_trade,

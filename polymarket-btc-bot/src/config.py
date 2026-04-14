@@ -201,6 +201,12 @@ class Settings(BaseSettings):
         default=True,
         alias="ARB_SYNC_CLOB_COLLATERAL_EACH_CYCLE",
     )
+    # Live: if >0, /summary also refreshes CLOB balance when last read is older than this (seconds).
+    # Keeps the dashboard aligned between long arb poll intervals.
+    arb_summary_clob_stale_seconds: float = Field(
+        default=5.0,
+        alias="ARB_SUMMARY_CLOB_STALE_SECONDS",
+    )
     allow_taker_execution: bool = Field(
         default=True, alias="ALLOW_TAKER_EXECUTION"
     )

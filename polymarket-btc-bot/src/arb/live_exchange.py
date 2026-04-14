@@ -7,6 +7,7 @@ NegRiskAdapter.convertPositions() using web3.py (see neg_risk_converter.py).
 """
 from __future__ import annotations
 
+import time
 import uuid
 from copy import replace
 from datetime import datetime, timezone
@@ -42,6 +43,8 @@ class LiveClobExchange(PaperExchange):
         self._ctf_approved: bool = False
         # Last successful CLOB collateral read (USDC, spendable on exchange) — for /summary UI.
         self.last_clob_collateral_usdc: float | None = None
+        # Monotonic clock: last time sync_cash_from_clob_collateral completed a successful API read.
+        self._last_clob_refresh_mono: float = 0.0
         # Approve USDC to Polymarket exchange contracts at startup (required for any buy orders)
         rpc = (config.polygon_rpc_url or "").strip()
         if rpc:
@@ -110,10 +113,12 @@ class LiveClobExchange(PaperExchange):
         old_cash = float(self.cash)
         new_cash = float(clob_free) + reserved
         delta = new_cash - old_cash
-        if abs(delta) > 1e-6:
-            self.cash = new_cash
-            if delta > 0.01:
-                self.contributed_capital += delta
+        # Always align ledger to CLOB + reservations when the API responds (fixes drift and FP noise).
+        self.cash = new_cash
+        self._last_clob_refresh_mono = time.monotonic()
+        if delta > 0.01:
+            self.contributed_capital += delta
+        if abs(delta) > 1e-4:
             logger.info(
                 "live_exchange.cash_synced_from_clob",
                 clob_free_usdc=round(clob_free, 4),

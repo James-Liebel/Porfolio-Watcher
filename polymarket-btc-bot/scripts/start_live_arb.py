@@ -64,6 +64,7 @@ _SHARED_LIVE: dict[str, str] = {
     "ENABLE_DIRECTIONAL_OVERLAY": "false",
     "ENABLE_TRADER_FOLLOW": "false",
     "ARB_SYNC_CLOB_COLLATERAL_EACH_CYCLE": "true",
+    "ARB_SUMMARY_CLOB_STALE_SECONDS": "5",
     "LOG_LEVEL": "INFO",
 }
 

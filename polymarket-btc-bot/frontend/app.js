@@ -92,11 +92,14 @@ function renderHeader(summary) {
     label.textContent = "Running";
   }
 
-  const avail =
-    summary.available_cash != null && summary.available_cash !== ""
-      ? Number(summary.available_cash)
-      : Number(summary.cash);
-  setText("hdr-cash", formatUSD(avail));
+  const spendRaw =
+    summary.spendable_cash_usdc != null && summary.spendable_cash_usdc !== ""
+      ? Number(summary.spendable_cash_usdc)
+      : summary.available_cash != null && summary.available_cash !== ""
+        ? Number(summary.available_cash)
+        : Number(summary.cash);
+  const spend = Number.isFinite(spendRaw) ? spendRaw : 0;
+  setText("hdr-cash", formatUSD(spend));
   const clobWrap = document.getElementById("hdr-clob-wrap");
   const clobEl = document.getElementById("hdr-clob");
   if (clobWrap && clobEl) {

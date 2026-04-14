@@ -96,6 +96,7 @@ class ArbControlAPI:
         )
 
     async def _summary(self, request: web.Request) -> web.Response:
+        await self._engine.refresh_clob_for_summary_if_stale()
         return _json(self._engine.summary())
 
     async def _ui_redirect(self, request: web.Request) -> web.StreamResponse:

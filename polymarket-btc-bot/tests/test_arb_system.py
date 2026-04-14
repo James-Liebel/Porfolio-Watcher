@@ -759,6 +759,39 @@ def test_scanner_capital_required_matches_exchange_cash_for_complete_set():
     assert opp.capital_required == pytest.approx(cash0 - exchange.cash, rel=0, abs=1e-4)
 
 
+def test_equity_fraction_scales_base_max_basket_notional():
+    event, books = _complete_set_event()
+    books = _set_book_source(books, "clob")
+    cfg = _settings(
+        max_basket_notional=100.0,
+        arb_basket_notional_fraction_of_equity=0.5,
+        arb_basket_notional_min_usd=1.0,
+        min_complete_set_edge_bps=1.0,
+    )
+    ex = PaperExchange(cfg)
+    ex.cash = 40.0
+    ex.contributed_capital = 40.0
+    eng = _make_engine_for_fraction_test(cfg, ex)
+    assert eng._effective_base_max_basket_notional() == pytest.approx(20.0)
+    ex.cash = 200.0
+    ex.contributed_capital = 200.0
+    assert eng._effective_base_max_basket_notional() == pytest.approx(100.0)
+
+
+def _make_engine_for_fraction_test(cfg, exchange):
+    """Minimal engine shell to test _effective_base_max_basket_notional."""
+    from types import SimpleNamespace
+
+    eng = SimpleNamespace(_config=cfg, _exchange=exchange)
+    from src.arb.engine import ArbEngine
+
+    eng._equity_bankroll_for_sizing = ArbEngine._equity_bankroll_for_sizing.__get__(eng, type(eng))
+    eng._effective_base_max_basket_notional = ArbEngine._effective_base_max_basket_notional.__get__(
+        eng, type(eng)
+    )
+    return eng
+
+
 def test_scanner_larger_max_basket_notional_increases_capital_required():
     event, books = _complete_set_event()
     books = _set_book_source(books, "clob")

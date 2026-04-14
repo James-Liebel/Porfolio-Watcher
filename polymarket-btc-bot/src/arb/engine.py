@@ -147,9 +147,51 @@ class ArbEngine:
         }
         self._risk.cooldowns = await self._repository.load_cooldowns()
         await self._repository.replace_positions(self._exchange.get_positions())
+        await self._maybe_sync_clob_collateral()
         await self._persist_runtime_state()
         self._risk.capture_session_baseline(self._exchange)
         self._initialized = True
+
+    async def _maybe_sync_clob_collateral(self) -> None:
+        """Live: refresh ledger cash from CLOB collateral API (deposits / redeems on Polymarket.com)."""
+        if self._config.paper_trade or not self._config.arb_sync_clob_collateral_each_cycle:
+            return
+        if not self._config.arb_live_execution:
+            return
+        from .live_exchange import LiveClobExchange
+
+        if not isinstance(self._exchange, LiveClobExchange):
+            return
+        try:
+            await asyncio.to_thread(self._exchange.sync_cash_from_clob_collateral)
+        except Exception as exc:
+            logger.warning("arb_engine.clob_collateral_sync_failed", error=str(exc))
+
+    def _equity_bankroll_for_sizing(self) -> float:
+        """Capital base for per-basket fraction sizing (grows with redeems after CLOB sync)."""
+        ex = self._exchange
+        return max(
+            float(ex.equity),
+            float(ex.contributed_capital),
+            float(ex.available_cash),
+            1.0,
+        )
+
+    def _effective_base_max_basket_notional(self) -> float:
+        """
+        Per-basket notional cap for scanning/risk before qualified multiplier.
+        With ARB_BASKET_NOTIONAL_FRACTION_OF_EQUITY > 0: min(bankroll × fraction, MAX_BASKET_NOTIONAL),
+        floored at ARB_BASKET_NOTIONAL_MIN_USD.
+        """
+        ceiling = float(self._config.max_basket_notional)
+        frac = float(self._config.arb_basket_notional_fraction_of_equity)
+        if frac <= 1e-12:
+            return ceiling
+        bankroll = self._equity_bankroll_for_sizing()
+        target = bankroll * frac
+        scaled = min(target, ceiling)
+        floor_usd = max(0.0, float(self._config.arb_basket_notional_min_usd))
+        return max(floor_usd, scaled)
 
     async def shutdown(self) -> None:
         self._stop.set()
@@ -180,6 +222,8 @@ class ArbEngine:
     async def run_cycle(self) -> dict[str, Any]:
         await self.initialize()
         async with self._cycle_lock:
+            await self._maybe_sync_clob_collateral()
+            await self._persist_runtime_state()
             self._last_auto_settlements = []
             events = await self._universe.refresh()
             self._active_event_ids = {event.event_id for event in events}
@@ -222,8 +266,11 @@ class ArbEngine:
 
             auto_settled = await self._auto_settle_resolved_events_locked()
             complete_set_unwound = await self._maybe_unwind_complete_set_baskets()
-            diagnostics = self._scanner.cycle_diagnostics(events, real_books)
-            base_max = float(self._config.max_basket_notional)
+            base_max = self._effective_base_max_basket_notional()
+            bankroll_sz = self._equity_bankroll_for_sizing()
+            diagnostics = self._scanner.cycle_diagnostics(
+                events, real_books, max_basket_notional=base_max
+            )
             mult = max(1.0, float(self._config.arb_max_basket_notional_qualified_multiplier))
             abs_cap = float(self._config.arb_max_basket_notional_qualified_abs_max)
             cycle_basket_cap = base_max
@@ -240,7 +287,7 @@ class ArbEngine:
                 else:
                     opportunities = probe
             else:
-                opportunities = self._scanner.scan(events, real_books)
+                opportunities = self._scanner.scan(events, real_books, max_basket_notional=base_max)
             self._opportunities = opportunities
             executed = 0
 
@@ -308,6 +355,11 @@ class ArbEngine:
                 "opportunities": len(opportunities),
                 "executed": executed,
                 "effective_max_basket_notional": round(cycle_basket_cap, 4),
+                "base_max_basket_notional": round(base_max, 4),
+                "equity_bankroll_for_sizing": round(bankroll_sz, 4),
+                "basket_notional_fraction_of_equity": float(
+                    self._config.arb_basket_notional_fraction_of_equity
+                ),
                 "diagnostics": diagnostics,
                 **bsrc,
             }
@@ -549,6 +601,12 @@ class ArbEngine:
 
     def summary(self) -> dict[str, Any]:
         payload = self._risk.summary(self._exchange, self._open_basket_count())
+        if (
+            not self._config.paper_trade
+            and hasattr(self._exchange, "last_clob_collateral_usdc")
+            and self._exchange.last_clob_collateral_usdc is not None
+        ):
+            payload["clob_collateral_usdc"] = round(float(self._exchange.last_clob_collateral_usdc), 4)
         payload.update(
             {
                 "paper_trade": self._config.paper_trade,

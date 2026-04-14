@@ -144,6 +144,16 @@ class Settings(BaseSettings):
         default=0.0,
         alias="ARB_MAX_BASKET_NOTIONAL_QUALIFIED_ABS_MAX",
     )
+    # 0 = off. Otherwise each basket targets min(bankroll × fraction, MAX_BASKET_NOTIONAL), floored at min USD.
+    # bankroll = max(equity, contributed_capital, available_cash) so redeems/deposits (after CLOB sync) scale size.
+    arb_basket_notional_fraction_of_equity: float = Field(
+        default=0.0,
+        alias="ARB_BASKET_NOTIONAL_FRACTION_OF_EQUITY",
+    )
+    arb_basket_notional_min_usd: float = Field(
+        default=5.0,
+        alias="ARB_BASKET_NOTIONAL_MIN_USD",
+    )
     max_total_open_baskets: int = Field(
         default=4, alias="MAX_TOTAL_OPEN_BASKETS"
     )
@@ -185,6 +195,11 @@ class Settings(BaseSettings):
     arb_consecutive_execution_failures_halt: int = Field(
         default=3,
         alias="ARB_CONSECUTIVE_EXECUTION_FAILURES_HALT",
+    )
+    # Live only: refresh internal ledger cash from Polymarket CLOB collateral each cycle (deposits / redeems).
+    arb_sync_clob_collateral_each_cycle: bool = Field(
+        default=True,
+        alias="ARB_SYNC_CLOB_COLLATERAL_EACH_CYCLE",
     )
     allow_taker_execution: bool = Field(
         default=True, alias="ALLOW_TAKER_EXECUTION"

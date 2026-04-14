@@ -27,8 +27,12 @@
     <div class="top-bar-right">
       <div class="header-financials" aria-label="Paper exchange balances">
         <div class="fin-col">
-          <span class="fin-label">Cash</span>
+          <span class="fin-label">Available cash</span>
           <span id="hdr-cash" class="fin-value">—</span>
+        </div>
+        <div id="hdr-clob-wrap" class="fin-col hidden" title="Spendable USDC on Polymarket CLOB (from API; ledger syncs each cycle in live mode)">
+          <span class="fin-label">CLOB collateral</span>
+          <span id="hdr-clob" class="fin-value">—</span>
         </div>
         <div class="fin-col">
           <span class="fin-label">Equity</span>

@@ -92,7 +92,25 @@ function renderHeader(summary) {
     label.textContent = "Running";
   }
 
-  setText("hdr-cash", formatUSD(summary.cash));
+  const avail =
+    summary.available_cash != null && summary.available_cash !== ""
+      ? Number(summary.available_cash)
+      : Number(summary.cash);
+  setText("hdr-cash", formatUSD(avail));
+  const clobWrap = document.getElementById("hdr-clob-wrap");
+  const clobEl = document.getElementById("hdr-clob");
+  if (clobWrap && clobEl) {
+    if (
+      !summary.paper_trade &&
+      summary.clob_collateral_usdc != null &&
+      summary.clob_collateral_usdc !== ""
+    ) {
+      clobWrap.classList.remove("hidden");
+      setText("hdr-clob", formatUSD(summary.clob_collateral_usdc));
+    } else {
+      clobWrap.classList.add("hidden");
+    }
+  }
   setText("bankroll", formatUSD(summary.equity));
   setText("hdr-contributed", formatUSD(summary.contributed_capital));
 
@@ -110,6 +128,8 @@ function setOfflineState() {
   pill.className = "status-pill status-connecting";
   label.textContent = "Bot offline";
   setText("hdr-cash", "—");
+  const clobWrap = document.getElementById("hdr-clob-wrap");
+  if (clobWrap) clobWrap.classList.add("hidden");
   setText("bankroll", "—");
   setText("hdr-contributed", "—");
   const pnlEl = document.getElementById("daily-pnl");
@@ -175,8 +195,22 @@ function renderDiagnostics(s) {
   const lc = s.last_cycle || {};
   const effMax =
     lc.effective_max_basket_notional != null ? formatNum(Number(lc.effective_max_basket_notional), 2) : "—";
+  const fracRaw = lc.basket_notional_fraction_of_equity;
+  const fracMode =
+    fracRaw != null && Number(fracRaw) > 0
+      ? `${formatNum(Number(fracRaw) * 100, 1)}% of bankroll (capped by MAX_BASKET_NOTIONAL)`
+      : "fixed cap (fraction off)";
   const rows = [
     ["Effective max basket (this cycle)", effMax],
+    [
+      "Bankroll for sizing",
+      lc.equity_bankroll_for_sizing != null ? formatUSD(lc.equity_bankroll_for_sizing) : "—",
+    ],
+    [
+      "Base max basket (before qualified mult.)",
+      lc.base_max_basket_notional != null ? formatUSD(lc.base_max_basket_notional) : "—",
+    ],
+    ["Basket sizing mode", fracMode],
     ["Events in universe", d.events_in_universe ?? "—"],
     ["Neg-risk tagged (eligible structure)", d.neg_risk_tagged_events ?? "—"],
     [

@@ -102,6 +102,10 @@ body {
   display: none;
 }
 
+.hidden {
+  display: none !important;
+}
+
 /* Badges */
 .badge {
   font-size: 0.65rem;

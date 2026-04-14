@@ -491,7 +491,13 @@ class OpportunityScanner:
             opportunities.append(opp)
         return opportunities
 
-    def cycle_diagnostics(self, events: list[ArbEvent], books: dict[str, TokenBook]) -> dict[str, Any]:
+    def cycle_diagnostics(
+        self,
+        events: list[ArbEvent],
+        books: dict[str, TokenBook],
+        *,
+        max_basket_notional: float | None = None,
+    ) -> dict[str, Any]:
         """Structural counts and best raw edges (ignoring MIN_*_EDGE_BPS) for observability.
 
         Negative max_raw_complete_set_edge_bps means the best priced complete set in the universe still
@@ -503,7 +509,11 @@ class OpportunityScanner:
         complete_priceable_events = 0
         best_cs_bps: float | None = None
         best_nr_bps: float | None = None
-        diag_mn = float(self._config.max_basket_notional)
+        diag_mn = (
+            float(max_basket_notional)
+            if max_basket_notional is not None
+            else float(self._config.max_basket_notional)
+        )
 
         for event in events:
             if event.neg_risk or event.enable_neg_risk:

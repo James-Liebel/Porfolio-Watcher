@@ -40,6 +40,8 @@ class LiveClobExchange(PaperExchange):
         super().__init__(config)
         self._client = build_live_clob_client(config)
         self._ctf_approved: bool = False
+        # Last successful CLOB collateral read (USDC, spendable on exchange) — for /summary UI.
+        self.last_clob_collateral_usdc: float | None = None
         # Approve USDC to Polymarket exchange contracts at startup (required for any buy orders)
         rpc = (config.polygon_rpc_url or "").strip()
         if rpc:
@@ -51,6 +53,76 @@ class LiveClobExchange(PaperExchange):
                 )
             except Exception as exc:
                 logger.warning("live_exchange.usdc_approval_failed", error=str(exc))
+
+    def _fetch_clob_collateral_usdc(self) -> tuple[float, int] | None:
+        """
+        Match scripts/check_live_connections.py: COLLATERAL balance across signature_type 0/1/2, pick largest.
+        Returns (usdc, signature_type) or None on failure.
+        """
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+            client = self._client
+            for sig in (0, 1, 2):
+                try:
+                    client.update_balance_allowance(
+                        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=sig)
+                    )
+                except Exception:
+                    pass
+            best_bal: dict | None = None
+            best_sig = -1
+            max_balance_raw = -1
+            for sig in (0, 1, 2):
+                try:
+                    b = client.get_balance_allowance(
+                        BalanceAllowanceParams(asset_type=AssetType.COLLATERAL, signature_type=sig)
+                    )
+                    if not isinstance(b, dict):
+                        continue
+                    br = int(b.get("balance", 0) or 0)
+                    if br > max_balance_raw:
+                        max_balance_raw = br
+                        best_bal = b
+                        best_sig = sig
+                except Exception:
+                    continue
+            if best_bal is None or max_balance_raw < 0:
+                return None
+            usdc = int(best_bal.get("balance", 0)) / 1e6
+            return (float(usdc), int(best_sig))
+        except Exception as exc:
+            logger.warning("live_exchange.collateral_fetch_failed", error=str(exc))
+            return None
+
+    def sync_cash_from_clob_collateral(self) -> float | None:
+        """
+        Align internal `cash` with Polymarket-reported spendable collateral so redeems/deposits off-bot
+        are visible to risk and the dashboard. Preserves reserved-cash locks: cash = clob_free + reserved.
+        When the sync increases cash (external credit), bumps contributed_capital by the same delta.
+        """
+        fetched = self._fetch_clob_collateral_usdc()
+        if fetched is None:
+            return None
+        clob_free, sig = fetched
+        self.last_clob_collateral_usdc = clob_free
+        reserved = sum(self._reserved_cash.values())
+        old_cash = float(self.cash)
+        new_cash = float(clob_free) + reserved
+        delta = new_cash - old_cash
+        if abs(delta) > 1e-6:
+            self.cash = new_cash
+            if delta > 0.01:
+                self.contributed_capital += delta
+            logger.info(
+                "live_exchange.cash_synced_from_clob",
+                clob_free_usdc=round(clob_free, 4),
+                signature_type=sig,
+                reserved_usdc=round(reserved, 4),
+                delta_cash=round(delta, 4),
+                new_cash=round(self.cash, 4),
+            )
+        return clob_free
 
     def _ensure_ctf_approved_once(self) -> None:
         if self._ctf_approved:

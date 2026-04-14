@@ -100,3 +100,21 @@ def test_session_realized_loss_halts():
     ok, _ = risk.approve(_opp(), ex, 0)
     assert ok is False
     assert "session realized" in risk.halt_reason.lower()
+
+
+def test_approve_respects_per_cycle_max_basket_override():
+    cfg = Settings(
+        _env_file=None,
+        allow_taker_execution=True,
+        max_basket_notional=50.0,
+        max_total_open_baskets=10,
+        max_event_exposure_pct=1.0,
+        opportunity_cooldown_seconds=0,
+        daily_loss_cap=0.99,
+    )
+    risk = ArbRiskManager(cfg)
+    risk.begin_cycle(books_synthetic=0)
+    ex = PaperExchange(cfg)
+    ex.set_starting_cash(500.0)
+    assert risk.approve(_opp(capital=60.0), ex, 0)[0] is False
+    assert risk.approve(_opp(capital=60.0), ex, 0, max_basket_notional=100.0)[0] is True

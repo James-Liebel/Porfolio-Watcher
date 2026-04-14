@@ -592,6 +592,23 @@ body {
   border-radius: var(--radius-md);
   padding: 14px 18px;
 }
+.diag-alert {
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin: 0 0 12px 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+}
+.diag-alert-warn {
+  background: rgba(247, 201, 72, 0.1);
+  border: 1px solid rgba(247, 201, 72, 0.35);
+  color: var(--text-primary);
+}
+.diag-alert-muted {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
 .diag-dl {
   display: flex;
   flex-direction: column;

@@ -759,6 +759,16 @@ def test_scanner_capital_required_matches_exchange_cash_for_complete_set():
     assert opp.capital_required == pytest.approx(cash0 - exchange.cash, rel=0, abs=1e-4)
 
 
+def test_scanner_larger_max_basket_notional_increases_capital_required():
+    event, books = _complete_set_event()
+    books = _set_book_source(books, "clob")
+    cfg = _settings(max_basket_notional=100.0, min_complete_set_edge_bps=1.0)
+    small = OpportunityScanner(cfg).scan([event], books, max_basket_notional=8.0)
+    big = OpportunityScanner(cfg).scan([event], books, max_basket_notional=80.0)
+    assert small and big
+    assert big[0].capital_required > small[0].capital_required + 0.01
+
+
 def test_cycle_diagnostics_reports_structural_counts_and_raw_edges():
     event, books = _complete_set_event()
     books = _set_book_source(books, "clob")
@@ -771,4 +781,6 @@ def test_cycle_diagnostics_reports_structural_counts_and_raw_edges():
     assert diag["neg_risk_tagged_events"] == 1
     assert diag["complete_set_priceable_events"] >= 1
     assert diag["max_raw_complete_set_edge_bps"] is not None
+    assert diag["complete_set_best_edge_meets_floor"] is False
+    assert diag["neg_risk_execution_disabled"] is False
     assert scanner.scan([event, nr_event], merged) == []

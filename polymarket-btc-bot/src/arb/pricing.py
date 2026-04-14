@@ -219,11 +219,22 @@ class OpportunityScanner:
     def __init__(self, config: Settings) -> None:
         self._config = config
 
-    def scan(self, events: list[ArbEvent], books: dict[str, TokenBook]) -> list[ArbOpportunity]:
+    def scan(
+        self,
+        events: list[ArbEvent],
+        books: dict[str, TokenBook],
+        *,
+        max_basket_notional: float | None = None,
+    ) -> list[ArbOpportunity]:
+        mn = (
+            float(max_basket_notional)
+            if max_basket_notional is not None
+            else float(self._config.max_basket_notional)
+        )
         opportunities: list[ArbOpportunity] = []
         for event in events:
-            opportunities.extend(self._complete_set_opportunities(event, books))
-            opportunities.extend(self._neg_risk_opportunities(event, books))
+            opportunities.extend(self._complete_set_opportunities(event, books, mn))
+            opportunities.extend(self._neg_risk_opportunities(event, books, mn))
 
         # Rank by absolute expected profit first so long-dated, high-$ arbs are not buried behind
         # small short-dated trades (annualization alone overweights "quick" marginal edges).
@@ -239,7 +250,9 @@ class OpportunityScanner:
         )
         return opportunities[: self._config.max_opportunities_per_cycle * 10]
 
-    def _complete_set_work(self, event: ArbEvent, books: dict[str, TokenBook]) -> _CompleteSetWork | None:
+    def _complete_set_work(
+        self, event: ArbEvent, books: dict[str, TokenBook], max_basket_notional: float
+    ) -> _CompleteSetWork | None:
         normalized_outcomes = [_normalize_outcome(market.outcome_name) for market in event.markets]
         if any(not outcome for outcome in normalized_outcomes):
             return None
@@ -281,7 +294,7 @@ class OpportunityScanner:
             return None
 
         size, cash_out = _max_size_under_notional_complete_set(
-            legs_spec, self._config.max_basket_notional, self._config
+            legs_spec, max_basket_notional, self._config
         )
         if size <= 1e-12 or cash_out <= 0:
             return None
@@ -299,8 +312,10 @@ class OpportunityScanner:
             yes_templates=yes_templates,
         )
 
-    def _complete_set_opportunities(self, event: ArbEvent, books: dict[str, TokenBook]) -> list[ArbOpportunity]:
-        w = self._complete_set_work(event, books)
+    def _complete_set_opportunities(
+        self, event: ArbEvent, books: dict[str, TokenBook], max_basket_notional: float
+    ) -> list[ArbOpportunity]:
+        w = self._complete_set_work(event, books, max_basket_notional)
         if w is None:
             return []
         if w.net_edge_bps < self._config.min_complete_set_edge_bps or w.profit <= 0:
@@ -355,7 +370,11 @@ class OpportunityScanner:
         return True
 
     def _neg_risk_try_source(
-        self, event: ArbEvent, books: dict[str, TokenBook], source_market: OutcomeMarket
+        self,
+        event: ArbEvent,
+        books: dict[str, TokenBook],
+        source_market: OutcomeMarket,
+        max_basket_notional: float,
     ) -> ArbOpportunity | None:
         no_book = books.get(source_market.no_token_id)
         # Polymarket CLOB requires price >= $0.01 (2 decimal places).
@@ -401,7 +420,7 @@ class OpportunityScanner:
             no_book.best_ask,
             source_market.fees_enabled,
             sell_specs,
-            self._config.max_basket_notional,
+            max_basket_notional,
             self._config,
         )
         if size <= 1e-12 or buy_cost <= 0:
@@ -453,13 +472,15 @@ class OpportunityScanner:
             seconds_to_expiry=seconds_to_expiry,
         )
 
-    def _neg_risk_opportunities(self, event: ArbEvent, books: dict[str, TokenBook]) -> list[ArbOpportunity]:
+    def _neg_risk_opportunities(
+        self, event: ArbEvent, books: dict[str, TokenBook], max_basket_notional: float
+    ) -> list[ArbOpportunity]:
         if not self._neg_risk_event_eligible(event):
             return []
 
         opportunities: list[ArbOpportunity] = []
         for source_market in event.markets:
-            opp = self._neg_risk_try_source(event, books, source_market)
+            opp = self._neg_risk_try_source(event, books, source_market, max_basket_notional)
             if opp is None:
                 continue
             if opp.net_edge_bps < self._config.min_neg_risk_edge_bps or opp.expected_profit <= 0:
@@ -482,12 +503,13 @@ class OpportunityScanner:
         complete_priceable_events = 0
         best_cs_bps: float | None = None
         best_nr_bps: float | None = None
+        diag_mn = float(self._config.max_basket_notional)
 
         for event in events:
             if event.neg_risk or event.enable_neg_risk:
                 neg_tagged += 1
 
-            w = self._complete_set_work(event, books)
+            w = self._complete_set_work(event, books, diag_mn)
             if w is not None:
                 complete_priceable_events += 1
                 best_cs_bps = w.net_edge_bps if best_cs_bps is None else max(best_cs_bps, w.net_edge_bps)
@@ -495,7 +517,7 @@ class OpportunityScanner:
             if self._neg_risk_event_eligible(event):
                 raw_edges: list[float] = []
                 for source_market in event.markets:
-                    opp = self._neg_risk_try_source(event, books, source_market)
+                    opp = self._neg_risk_try_source(event, books, source_market, diag_mn)
                     if opp is not None:
                         raw_edges.append(opp.net_edge_bps)
                 if raw_edges:
@@ -515,6 +537,12 @@ class OpportunityScanner:
             spreads_bps[len(spreads_bps) // 2] if spreads_bps else None
         )
 
+        min_cs = float(self._config.min_complete_set_edge_bps)
+        min_nr = float(self._config.min_neg_risk_edge_bps)
+        # Live launcher often sets MIN_NEG_RISK_EDGE_BPS very high to disable execution while
+        # still scanning neg-risk diagnostics.
+        neg_risk_execution_effectively_disabled = min_nr >= 1_000_000.0
+
         return {
             "events_in_universe": len(events),
             "neg_risk_tagged_events": neg_tagged,
@@ -522,8 +550,17 @@ class OpportunityScanner:
             "complete_set_priceable_events": complete_priceable_events,
             "max_raw_complete_set_edge_bps": best_cs_bps,
             "max_raw_neg_risk_edge_bps": best_nr_bps,
-            "min_complete_set_edge_bps_config": float(self._config.min_complete_set_edge_bps),
-            "min_neg_risk_edge_bps_config": float(self._config.min_neg_risk_edge_bps),
+            "min_complete_set_edge_bps_config": min_cs,
+            "min_neg_risk_edge_bps_config": min_nr,
+            "complete_set_best_edge_meets_floor": (
+                best_cs_bps is not None and best_cs_bps >= min_cs
+            ),
+            "neg_risk_best_edge_meets_floor": (
+                not neg_risk_execution_effectively_disabled
+                and best_nr_bps is not None
+                and best_nr_bps >= min_nr
+            ),
+            "neg_risk_execution_disabled": neg_risk_execution_effectively_disabled,
             "median_book_spread_bps": median_spread_bps,
             "max_arb_leg_spread_bps_config": float(self._config.max_arb_leg_spread_bps),
         }

@@ -149,17 +149,52 @@ function renderDiagnostics(s) {
     return;
   }
   const fmtBps = (v) => (v == null || Number.isNaN(Number(v)) ? "—" : formatNum(Number(v), 2));
+  const fmtNrFloor = (v) => {
+    const n = Number(v);
+    if (v == null || Number.isNaN(n)) return "—";
+    if (n >= 999000) return "off (execution disabled; diagnostics only)";
+    return formatNum(n, 2);
+  };
+  const meetsCs = d.complete_set_best_edge_meets_floor === true;
+  const nrOff = d.neg_risk_execution_disabled === true;
+  const meetsNr =
+    !nrOff &&
+    d.neg_risk_best_edge_meets_floor === true;
+  let alertHtml = "";
+  if (!meetsCs) {
+    alertHtml +=
+      '<p class="diag-alert diag-alert-warn" role="status">Best <strong>complete-set</strong> edge at top-of-book is <strong>below</strong> your floor — the scanner will not open new complete-set arbs this cycle. Negative values mean the cheapest full YES basket still costs more than $1 per $1 of payout (after modeled taker fees), which is common in tight markets.</p>';
+  }
+  if (nrOff) {
+    alertHtml +=
+      '<p class="diag-alert diag-alert-muted" role="status">Neg-risk <strong>execution</strong> is disabled by config (high <code>MIN_NEG_RISK_EDGE_BPS</code>). Raw neg-risk edges are shown for monitoring only.</p>';
+  } else if (!meetsNr && (d.neg_risk_priceable_events ?? 0) > 0) {
+    alertHtml +=
+      '<p class="diag-alert diag-alert-warn" role="status">Best <strong>neg-risk</strong> edge at top-of-book is below your floor — no new neg-risk baskets this cycle.</p>';
+  }
+  const lc = s.last_cycle || {};
+  const effMax =
+    lc.effective_max_basket_notional != null ? formatNum(Number(lc.effective_max_basket_notional), 2) : "—";
   const rows = [
+    ["Effective max basket (this cycle)", effMax],
     ["Events in universe", d.events_in_universe ?? "—"],
-    ["Neg-risk tagged", d.neg_risk_tagged_events ?? "—"],
-    ["Neg-risk priceable (CLOB)", d.neg_risk_priceable_events ?? "—"],
-    ["Complete-set priceable (CLOB)", d.complete_set_priceable_events ?? "—"],
+    ["Neg-risk tagged (eligible structure)", d.neg_risk_tagged_events ?? "—"],
+    [
+      "Neg-risk: priced at TOB (not necessarily profitable)",
+      d.neg_risk_priceable_events ?? "—",
+    ],
+    [
+      "Complete-set: priced at TOB (not necessarily profitable)",
+      d.complete_set_priceable_events ?? "—",
+    ],
+    ["Best complete-set edge vs floor", meetsCs ? "meets floor ✓" : "below floor"],
+    ["Best neg-risk edge vs floor", nrOff ? "N/A (off)" : meetsNr ? "meets floor ✓" : "below floor"],
     ["Max raw complete-set edge (bps)", fmtBps(d.max_raw_complete_set_edge_bps)],
     ["Max raw neg-risk edge (bps)", fmtBps(d.max_raw_neg_risk_edge_bps)],
     ["Config floor complete-set (bps)", fmtBps(d.min_complete_set_edge_bps_config)],
-    ["Config floor neg-risk (bps)", fmtBps(d.min_neg_risk_edge_bps_config)],
+    ["Config floor neg-risk (bps)", fmtNrFloor(d.min_neg_risk_edge_bps_config)],
   ];
-  el.innerHTML = `<dl class="diag-dl">${rows
+  el.innerHTML = `${alertHtml}<dl class="diag-dl">${rows
     .map(
       ([k, v]) =>
         `<div class="diag-row"><dt>${escHtml(k)}</dt><dd>${escHtml(String(v))}</dd></div>`

@@ -132,6 +132,18 @@ class Settings(BaseSettings):
         ),
     )
     max_basket_notional: float = Field(default=50.0, alias="MAX_BASKET_NOTIONAL")
+    # When >1 and a probe scan at MAX_BASKET_NOTIONAL finds ≥1 opportunity, rescan with a higher cap
+    # so baskets can use more depth (still subject to edge floors, cash, and event exposure).
+    arb_max_basket_notional_qualified_multiplier: float = Field(
+        default=1.0,
+        alias="ARB_MAX_BASKET_NOTIONAL_QUALIFIED_MULTIPLIER",
+        description="1.0 = off. Execution and model risk remain; this only scales scanner sizing when an arb already clears floors at the base cap.",
+    )
+    # Hard ceiling for scaled basket notional; 0 = use only multiplier × MAX_BASKET_NOTIONAL.
+    arb_max_basket_notional_qualified_abs_max: float = Field(
+        default=0.0,
+        alias="ARB_MAX_BASKET_NOTIONAL_QUALIFIED_ABS_MAX",
+    )
     max_total_open_baskets: int = Field(
         default=4, alias="MAX_TOTAL_OPEN_BASKETS"
     )

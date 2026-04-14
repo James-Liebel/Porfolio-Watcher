@@ -62,8 +62,15 @@ class ArbRiskManager:
         exchange,
         open_baskets: int,
         open_baskets_by_strategy: dict[str, int] | None = None,
+        *,
+        max_basket_notional: float | None = None,
     ) -> tuple[bool, str]:
         now = datetime.now(timezone.utc)
+        basket_cap = (
+            float(max_basket_notional)
+            if max_basket_notional is not None
+            else float(self._config.max_basket_notional)
+        )
         self._bump_equity_peak(exchange.equity)
         self._enforce_stops(exchange)
         if self.cycle_execution_block_reason:
@@ -82,7 +89,7 @@ class ArbRiskManager:
             return False, self.last_decision_reason
 
         # Scanner sizing uses float binary search; allow microscopic overshoot vs cap.
-        if opportunity.capital_required > self._config.max_basket_notional + 1e-4:
+        if opportunity.capital_required > basket_cap + 1e-4:
             self.rejected_count += 1
             self.last_decision_reason = "basket notional above configured cap"
             return False, self.last_decision_reason

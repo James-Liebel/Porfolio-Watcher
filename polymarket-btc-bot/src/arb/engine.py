@@ -223,7 +223,24 @@ class ArbEngine:
             auto_settled = await self._auto_settle_resolved_events_locked()
             complete_set_unwound = await self._maybe_unwind_complete_set_baskets()
             diagnostics = self._scanner.cycle_diagnostics(events, real_books)
-            opportunities = self._scanner.scan(events, real_books)
+            base_max = float(self._config.max_basket_notional)
+            mult = max(1.0, float(self._config.arb_max_basket_notional_qualified_multiplier))
+            abs_cap = float(self._config.arb_max_basket_notional_qualified_abs_max)
+            cycle_basket_cap = base_max
+            if mult > 1.0 + 1e-9:
+                probe = self._scanner.scan(events, real_books, max_basket_notional=base_max)
+                if probe:
+                    scaled = base_max * mult
+                    if abs_cap > 1e-9:
+                        scaled = min(scaled, abs_cap)
+                    cycle_basket_cap = max(base_max, scaled)
+                    opportunities = self._scanner.scan(
+                        events, real_books, max_basket_notional=cycle_basket_cap
+                    )
+                else:
+                    opportunities = probe
+            else:
+                opportunities = self._scanner.scan(events, real_books)
             self._opportunities = opportunities
             executed = 0
 
@@ -242,6 +259,7 @@ class ArbEngine:
                     self._exchange,
                     open_baskets,
                     open_baskets_by_strategy=self._open_basket_count_by_strategy(),
+                    max_basket_notional=cycle_basket_cap,
                 )
                 await self._repository.record_opportunity(
                     opportunity,
@@ -289,6 +307,7 @@ class ArbEngine:
                 "complete_set_unwound": complete_set_unwound,
                 "opportunities": len(opportunities),
                 "executed": executed,
+                "effective_max_basket_notional": round(cycle_basket_cap, 4),
                 "diagnostics": diagnostics,
                 **bsrc,
             }

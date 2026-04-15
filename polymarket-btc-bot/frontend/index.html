@@ -26,20 +26,20 @@
     </div>
     <div class="top-bar-right">
       <div class="header-financials" aria-label="Paper exchange balances">
-        <div class="fin-col">
+        <div class="fin-col" title="Free USDC for new orders (paper: ledger; live: Polymarket CLOB free collateral after sync).">
           <span class="fin-label">Spendable cash</span>
           <span id="hdr-cash" class="fin-value">—</span>
         </div>
-        <div id="hdr-clob-wrap" class="fin-col hidden" title="Spendable USDC on Polymarket CLOB (from API; ledger syncs each cycle in live mode)">
+        <div id="hdr-clob-wrap" class="fin-col hidden" title="Raw CLOB API free collateral (live); should match spendable when ledger is synced.">
           <span class="fin-label">CLOB collateral</span>
           <span id="hdr-clob" class="fin-value">—</span>
         </div>
-        <div class="fin-col">
+        <div class="fin-col" title="Ledger cash + mark-to-market of open outcome positions (not the same as spendable when you hold inventory).">
           <span class="fin-label">Equity</span>
           <span id="bankroll" class="fin-value fin-value-primary">—</span>
         </div>
-        <div class="fin-col" title="INITIAL_BANKROLL + recorded dashboard deposits (not CLOB PnL or redeems).">
-          <span class="fin-label">Contributed</span>
+        <div class="fin-col" title="INITIAL_BANKROLL in .env plus sum of dashboard &quot;Add Money&quot; deposits (reconciled each run — not inferred from CLOB balance).">
+          <span class="fin-label">Capital in</span>
           <span id="hdr-contributed" class="fin-value">—</span>
         </div>
         <div class="fin-col">

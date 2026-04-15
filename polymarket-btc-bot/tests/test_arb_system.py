@@ -483,6 +483,39 @@ async def test_engine_restores_runtime_state_after_restart():
 
 
 @pytest.mark.anyio
+async def test_contributed_capital_reconciles_initial_plus_deposits_not_stale_runtime():
+    """Inflated arb_runtime_state.contributed_capital must not survive init."""
+    settings = _settings(initial_bankroll=100.0)
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        await legacy_db.init()
+        await repository.init()
+        await legacy_db.insert_deposit(25.0, "extra")
+        await repository.save_runtime_state(
+            cash=125.0,
+            contributed_capital=99999.0,
+            realized_pnl=0.0,
+            fees_paid=0.0,
+            rebates_earned=0.0,
+            updated_at="2020-01-01T00:00:00+00:00",
+        )
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse([]),
+            market_data=StaticMarketData({}),
+        )
+        await engine.initialize()
+        assert engine.exchange.contributed_capital == pytest.approx(125.0, abs=1e-6)
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.anyio
 async def test_control_api_requires_token_when_configured():
     settings = _settings(control_api_token="secret-token")
 

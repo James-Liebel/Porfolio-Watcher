@@ -10,6 +10,7 @@ Usage (repo root):  python scripts/start_paper_arb.py
 """
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -80,6 +81,14 @@ def unlink_sqlite(path: Path) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Start paper structural arb (single bot).")
+    parser.add_argument(
+        "--log-child",
+        metavar="PATH",
+        help="Append child process stdout/stderr to this file (JSON logs).",
+    )
+    args = parser.parse_args()
+
     port = 8765
     rel_db = "data/paper_arb.db"
     kill_listen_ports([8765, 8767, 8780])
@@ -105,12 +114,23 @@ def main() -> int:
         }
     )
 
+    log_f = None
+    if args.log_child:
+        log_path = Path(args.log_child)
+        if not log_path.is_absolute():
+            log_path = (ROOT / log_path).resolve()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_f = open(log_path, "a", encoding="utf-8")
+        popen_kw["stdout"] = log_f
+        popen_kw["stderr"] = subprocess.STDOUT
+
     subprocess.Popen(
         [sys.executable, "-m", "src"],
         cwd=str(ROOT),
         env=env,
         **popen_kw,
     )
+    # Keep log file handle open until launcher exits so the child keeps a valid stdout sink on Windows.
     n_cpu = cpu_count_safe()
     print(f"Started paper structural arb on port {port}  db={rel_db}")
     print(

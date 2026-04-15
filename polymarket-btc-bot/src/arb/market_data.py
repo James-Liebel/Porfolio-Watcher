@@ -17,6 +17,14 @@ except Exception:  # pragma: no cover
     ClobClient = None  # type: ignore[assignment]
 
 
+def _is_missing_clob_orderbook(exc: BaseException) -> bool:
+    """Gamma can reference tokens with no live CLOB book (resolved/closed markets, lag)."""
+    msg = str(exc).lower()
+    if "no orderbook exists" in msg:
+        return True
+    return "404" in msg and "orderbook" in msg
+
+
 def _coerce_float(value: Any, default: float = 0.0) -> float:
     try:
         if value in ("", None):
@@ -113,12 +121,20 @@ class ClobMarketDataService:
             except Exception as exc:
                 last_exc = exc
                 if attempt + 1 >= attempts:
-                    logger.warning(
-                        "market_data.book_error",
-                        token_id=token_id,
-                        attempts=attempts,
-                        error=str(exc),
-                    )
+                    if _is_missing_clob_orderbook(exc):
+                        logger.debug(
+                            "market_data.book_missing",
+                            token_id=token_id,
+                            attempts=attempts,
+                            error=str(exc),
+                        )
+                    else:
+                        logger.warning(
+                            "market_data.book_error",
+                            token_id=token_id,
+                            attempts=attempts,
+                            error=str(exc),
+                        )
                     raise
                 delay = float(self._config.clob_book_retry_delay_seconds) * (attempt + 1)
                 await asyncio.sleep(delay)

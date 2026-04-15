@@ -20,7 +20,7 @@ from py_clob_client.order_builder.constants import BUY, SELL
 from ..config import Settings
 from ..polymarket.clob_factory import build_live_clob_client
 from .exchange import PaperExchange
-from .models import ArbEvent, FillRecord, OrderIntent, OrderRecord, utc_now
+from .models import ArbEvent, FillRecord, OrderIntent, OrderRecord, PositionRecord, utc_now
 from .neg_risk_converter import (
     convert_no_to_yes,
     ensure_ctf_approved,
@@ -57,10 +57,10 @@ class LiveClobExchange(PaperExchange):
             except Exception as exc:
                 logger.warning("live_exchange.usdc_approval_failed", error=str(exc))
 
-    def _fetch_clob_collateral_usdc(self) -> tuple[float, int] | None:
+    def _fetch_clob_collateral_usdc(self) -> tuple[float, int, int] | None:
         """
         Match scripts/check_live_connections.py: COLLATERAL balance across signature_type 0/1/2, pick largest.
-        Returns (usdc, signature_type) or None on failure.
+        Returns (usdc, signature_type, successful_signature_reads) or None on failure.
         """
         try:
             from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
@@ -76,6 +76,7 @@ class LiveClobExchange(PaperExchange):
             best_bal: dict | None = None
             best_sig = -1
             max_balance_raw = -1
+            ok_reads = 0
             for sig in (0, 1, 2):
                 try:
                     b = client.get_balance_allowance(
@@ -83,6 +84,7 @@ class LiveClobExchange(PaperExchange):
                     )
                     if not isinstance(b, dict):
                         continue
+                    ok_reads += 1
                     br = int(b.get("balance", 0) or 0)
                     if br > max_balance_raw:
                         max_balance_raw = br
@@ -93,7 +95,7 @@ class LiveClobExchange(PaperExchange):
             if best_bal is None or max_balance_raw < 0:
                 return None
             usdc = int(best_bal.get("balance", 0)) / 1e6
-            return (float(usdc), int(best_sig))
+            return (float(usdc), int(best_sig), int(ok_reads))
         except Exception as exc:
             logger.warning("live_exchange.collateral_fetch_failed", error=str(exc))
             return None
@@ -108,10 +110,22 @@ class LiveClobExchange(PaperExchange):
         fetched = self._fetch_clob_collateral_usdc()
         if fetched is None:
             return None
-        clob_free, sig = fetched
+        clob_free, sig, ok_reads = fetched
+        old_cash = float(self.cash)
         self.last_clob_collateral_usdc = clob_free
         reserved = sum(self._reserved_cash.values())
-        old_cash = float(self.cash)
+        # Startup / transient guard: if only a subset of signature types answered and the max is 0,
+        # avoid snapping cash to zero on a likely partial read (prevents false drawdown halts).
+        if clob_free <= 0.0 and old_cash > 1.0 and ok_reads < 3:
+            logger.warning(
+                "live_exchange.cash_sync_inconclusive_zero",
+                clob_free_usdc=round(clob_free, 4),
+                signature_type=sig,
+                successful_signature_reads=ok_reads,
+                old_cash=round(old_cash, 4),
+            )
+            self._last_clob_refresh_mono = time.monotonic()
+            return clob_free
         new_cash = float(clob_free) + reserved
         delta = new_cash - old_cash
         # Always align ledger to CLOB + reservations when the API responds (fixes drift and FP noise).
@@ -129,6 +143,90 @@ class LiveClobExchange(PaperExchange):
                 new_cash=round(self.cash, 4),
             )
         return clob_free
+
+    def sync_positions_from_clob_trades(self) -> int:
+        """
+        Best-effort reconstruction of current holdings from user trade history.
+
+        This lets live equity/open_positions reflect positions opened in previous sessions
+        (or outside this process) rather than only this runtime's local ledger.
+        """
+        try:
+            trades = self._client.get_trades()
+        except Exception as exc:
+            logger.warning("live_exchange.positions_sync_failed", error=str(exc))
+            return 0
+
+        rows: list[dict] = []
+        if isinstance(trades, list):
+            rows = [t for t in trades if isinstance(t, dict)]
+        elif isinstance(trades, dict):
+            maybe = trades.get("data") or trades.get("trades") or []
+            if isinstance(maybe, list):
+                rows = [t for t in maybe if isinstance(t, dict)]
+        if not rows:
+            return 0
+
+        agg: dict[str, dict[str, float | str]] = {}
+        # API returns newest first; replay oldest→newest for stable avg-price updates.
+        for t in reversed(rows):
+            if str(t.get("status", "")).upper() != "CONFIRMED":
+                continue
+            token_id = str(t.get("asset_id") or t.get("token_id") or "").strip()
+            if not token_id:
+                continue
+            side = str(t.get("side", "")).upper()
+            try:
+                size = float(t.get("size") or 0.0)
+                price = float(t.get("price") or 0.0)
+            except Exception:
+                continue
+            if size <= 1e-12:
+                continue
+            rec = agg.setdefault(
+                token_id,
+                {
+                    "size": 0.0,
+                    "avg_price": 0.0,
+                    "market_id": str(t.get("market") or ""),
+                    "outcome_name": str(t.get("outcome") or ""),
+                },
+            )
+            cur = float(rec["size"])
+            avg = float(rec["avg_price"])
+            if side == "BUY":
+                total = cur + size
+                if total > 1e-12:
+                    rec["avg_price"] = ((cur * avg) + (size * price)) / total
+                    rec["size"] = total
+            elif side == "SELL":
+                rem = cur - size
+                rec["size"] = rem if rem > 1e-12 else 0.0
+
+        rebuilt: dict[str, PositionRecord] = {}
+        for token_id, r in agg.items():
+            sz = float(r["size"])
+            if sz <= 1e-9:
+                continue
+            meta = self._token_meta.get(token_id, {})
+            market_id = str(meta.get("market_id") or r["market_id"] or "")
+            event_id = str(meta.get("event_id") or (f"external:{market_id}" if market_id else "external"))
+            outcome_name = str(meta.get("outcome_name") or r["outcome_name"] or "Unknown")
+            contract_side = str(meta.get("contract_side") or ("YES" if outcome_name.lower() == "yes" else "NO"))
+            rebuilt[token_id] = PositionRecord(
+                token_id=token_id,
+                market_id=market_id,
+                event_id=event_id,
+                outcome_name=outcome_name,
+                contract_side=contract_side,  # type: ignore[arg-type]
+                size=sz,
+                avg_price=max(0.0, float(r["avg_price"])),
+                updated_at=utc_now(),
+            )
+
+        self._positions = rebuilt
+        logger.info("live_exchange.positions_synced", positions=len(rebuilt), trades_seen=len(rows))
+        return len(rebuilt)
 
     def _ensure_ctf_approved_once(self) -> None:
         if self._ctf_approved:

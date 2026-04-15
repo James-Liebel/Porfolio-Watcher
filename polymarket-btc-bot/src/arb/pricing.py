@@ -219,6 +219,12 @@ class OpportunityScanner:
     def __init__(self, config: Settings) -> None:
         self._config = config
 
+    def _strategy_mode(self) -> str:
+        mode = str(getattr(self._config, "arb_strategy_mode", "both") or "both").strip().lower()
+        if mode in {"both", "complete_set", "neg_risk"}:
+            return mode
+        return "both"
+
     def scan(
         self,
         events: list[ArbEvent],
@@ -232,9 +238,12 @@ class OpportunityScanner:
             else float(self._config.max_basket_notional)
         )
         opportunities: list[ArbOpportunity] = []
+        mode = self._strategy_mode()
         for event in events:
-            opportunities.extend(self._complete_set_opportunities(event, books, mn))
-            opportunities.extend(self._neg_risk_opportunities(event, books, mn))
+            if mode in {"both", "complete_set"}:
+                opportunities.extend(self._complete_set_opportunities(event, books, mn))
+            if mode in {"both", "neg_risk"}:
+                opportunities.extend(self._neg_risk_opportunities(event, books, mn))
 
         # Rank by absolute expected profit first so long-dated, high-$ arbs are not buried behind
         # small short-dated trades (annualization alone overweights "quick" marginal edges).

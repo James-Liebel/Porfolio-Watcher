@@ -93,6 +93,27 @@ def _neg_risk_event() -> tuple[ArbEvent, dict[str, TokenBook]]:
     return event, books
 
 
+def test_scanner_respects_strategy_mode_filtering():
+    event_cs, books_cs = _complete_set_event()
+    event_nr, books_nr = _neg_risk_event()
+    books_cs = _set_book_source(dict(books_cs), "clob")
+    books_nr = _set_book_source(dict(books_nr), "clob")
+
+    cs_only = OpportunityScanner(_settings(arb_strategy_mode="complete_set"))
+    nr_only = OpportunityScanner(_settings(arb_strategy_mode="neg_risk"))
+    both = OpportunityScanner(_settings(arb_strategy_mode="both"))
+
+    cs_opps = cs_only.scan([event_cs], books_cs)
+    nr_opps = nr_only.scan([event_nr], books_nr)
+    both_opps = both.scan([event_nr], books_nr)
+
+    assert cs_opps
+    assert nr_opps
+    assert all(opp.strategy_type == "complete_set" for opp in cs_opps)
+    assert all(opp.strategy_type == "neg_risk_conversion" for opp in nr_opps)
+    assert len(both_opps) >= max(len(cs_opps), len(nr_opps))
+
+
 def event_time():
     from datetime import datetime, timezone
 

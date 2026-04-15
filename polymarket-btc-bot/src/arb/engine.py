@@ -93,6 +93,7 @@ class ArbEngine:
         self._current_cycle_pct: float | None = 0.0
         self._current_cycle_step = "idle"
         self._complete_set_hold_log_mono: dict[str, float] = {}
+        self._adaptive_event_target = int(config.max_tracked_events)
 
     @property
     def risk(self) -> ArbRiskManager:
@@ -148,6 +149,8 @@ class ArbEngine:
         self._risk.cooldowns = await self._repository.load_cooldowns()
         await self._repository.replace_positions(self._exchange.get_positions())
         await self._maybe_sync_clob_collateral()
+        await self._maybe_sync_live_positions_from_trades()
+        await self._repository.replace_positions(self._exchange.get_positions())
         await self._reconcile_nominal_contributed_capital()
         await self._persist_runtime_state()
         self._risk.capture_session_baseline(self._exchange)
@@ -177,6 +180,19 @@ class ArbEngine:
             await asyncio.to_thread(self._exchange.sync_cash_from_clob_collateral)
         except Exception as exc:
             logger.warning("arb_engine.clob_collateral_sync_failed", error=str(exc))
+
+    async def _maybe_sync_live_positions_from_trades(self) -> None:
+        """Live: hydrate positions from CLOB trade history so equity includes pre-existing holdings."""
+        if self._config.paper_trade or not self._config.arb_live_execution:
+            return
+        from .live_exchange import LiveClobExchange
+
+        if not isinstance(self._exchange, LiveClobExchange):
+            return
+        try:
+            await asyncio.to_thread(self._exchange.sync_positions_from_clob_trades)
+        except Exception as exc:
+            logger.warning("arb_engine.live_positions_sync_failed", error=str(exc))
 
     async def refresh_clob_for_summary_if_stale(self) -> None:
         """Refresh CLOB balance before /summary when data is older than arb_summary_clob_stale_seconds."""
@@ -256,10 +272,12 @@ class ArbEngine:
     async def run_cycle(self) -> dict[str, Any]:
         await self.initialize()
         async with self._cycle_lock:
+            cycle_t0 = time.monotonic()
             await self._maybe_sync_clob_collateral()
             await self._persist_runtime_state()
             self._last_auto_settlements = []
             events = await self._universe.refresh()
+            events = self._apply_event_budget(events)
             self._active_event_ids = {event.event_id for event in events}
             for event in events:
                 self._events[event.event_id] = event
@@ -382,6 +400,7 @@ class ArbEngine:
             self._last_cycle_at = utc_now()
             self._last_cycle_summary = {
                 "timestamp": self._last_cycle_at.isoformat(),
+                "cycle_elapsed_seconds": round(time.monotonic() - cycle_t0, 3),
                 "tracked_events": len(events),
                 "tracked_books": len(books),
                 "auto_settled": auto_settled,
@@ -391,12 +410,15 @@ class ArbEngine:
                 "effective_max_basket_notional": round(cycle_basket_cap, 4),
                 "base_max_basket_notional": round(base_max, 4),
                 "equity_bankroll_for_sizing": round(bankroll_sz, 4),
+                "strategy_mode": str(self._config.arb_strategy_mode),
+                "adaptive_event_target": int(self._adaptive_event_target),
                 "basket_notional_fraction_of_equity": float(
                     self._config.arb_basket_notional_fraction_of_equity
                 ),
                 "diagnostics": diagnostics,
                 **bsrc,
             }
+            self._update_adaptive_event_target(self._last_cycle_summary)
             logger.info(
                 "arb_engine.cycle_done",
                 tracked_events=len(events),
@@ -413,6 +435,37 @@ class ArbEngine:
             self._current_cycle_step = "idle"
             self._current_cycle_pct = 0.0
             return dict(self._last_cycle_summary)
+
+    def _apply_event_budget(self, events: list[ArbEvent]) -> list[ArbEvent]:
+        if not self._config.arb_adaptive_event_budget_enabled:
+            self._adaptive_event_target = int(self._config.max_tracked_events)
+            return events
+        lo = max(1, int(self._config.arb_adaptive_event_budget_min))
+        hi = max(lo, int(self._config.arb_adaptive_event_budget_max))
+        self._adaptive_event_target = max(lo, min(hi, int(self._adaptive_event_target)))
+        if len(events) <= self._adaptive_event_target:
+            return events
+        return events[: self._adaptive_event_target]
+
+    def _update_adaptive_event_target(self, cycle_summary: dict[str, Any]) -> None:
+        if not self._config.arb_adaptive_event_budget_enabled:
+            return
+        lo = max(1, int(self._config.arb_adaptive_event_budget_min))
+        hi = max(lo, int(self._config.arb_adaptive_event_budget_max))
+        target_sec = max(15.0, float(self._config.arb_adaptive_event_target_cycle_seconds))
+        elapsed = float(cycle_summary.get("cycle_elapsed_seconds") or 0.0)
+        books_total = max(1, int(cycle_summary.get("tracked_books") or 0))
+        books_syn = int(cycle_summary.get("books_synthetic") or 0)
+        syn_ratio = books_syn / books_total
+
+        new_target = int(self._adaptive_event_target)
+        # Under pressure: long cycles or lots of synthetic books -> scale down.
+        if elapsed > target_sec * 1.25 or syn_ratio >= 0.35:
+            new_target = int(max(lo, round(new_target * 0.86)))
+        # Headroom: fast cycle and real books mostly available -> scale up.
+        elif elapsed > 0 and elapsed < target_sec * 0.72 and syn_ratio <= 0.18:
+            new_target = int(min(hi, round(new_target * 1.12)))
+        self._adaptive_event_target = max(lo, min(hi, new_target))
 
 
     async def _append_paper_equity_snapshot(self) -> None:

@@ -163,8 +163,27 @@ class Settings(BaseSettings):
     max_opportunities_per_cycle: int = Field(
         default=3, alias="MAX_OPPORTUNITIES_PER_CYCLE"
     )
+    # Structural strategy selector: both, complete_set, or neg_risk.
+    arb_strategy_mode: str = Field(default="both", alias="ARB_STRATEGY_MODE")
     opportunity_cooldown_seconds: int = Field(
         default=300, alias="OPPORTUNITY_COOLDOWN_SECONDS"
+    )
+    # Adaptive event budget: adjusts effective event count each cycle based on runtime pressure.
+    arb_adaptive_event_budget_enabled: bool = Field(
+        default=False,
+        alias="ARB_ADAPTIVE_EVENT_BUDGET_ENABLED",
+    )
+    arb_adaptive_event_budget_min: int = Field(
+        default=200,
+        alias="ARB_ADAPTIVE_EVENT_BUDGET_MIN",
+    )
+    arb_adaptive_event_budget_max: int = Field(
+        default=1200,
+        alias="ARB_ADAPTIVE_EVENT_BUDGET_MAX",
+    )
+    arb_adaptive_event_target_cycle_seconds: float = Field(
+        default=90.0,
+        alias="ARB_ADAPTIVE_EVENT_TARGET_CYCLE_SECONDS",
     )
     # 0 = disabled. Max (ask−bid)/mid in bps for each CLOB leg in a structural basket; skips wide/fragile books.
     max_arb_leg_spread_bps: float = Field(

@@ -52,7 +52,8 @@ _SHARED_LIVE: dict[str, str] = {
     "ARB_ADAPTIVE_EVENT_BUDGET_MIN": "360",
     "ARB_ADAPTIVE_EVENT_BUDGET_MAX": "1400",
     "ARB_ADAPTIVE_EVENT_TARGET_CYCLE_SECONDS": "85",
-    "ARB_CONSECUTIVE_EXECUTION_FAILURES_HALT": "2",
+    # Keep live bot resilient during thin/fast books: do not hard-halt after a few failed baskets.
+    "ARB_CONSECUTIVE_EXECUTION_FAILURES_HALT": "0",
     "ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE": "0",
     "MAX_ARB_LEG_SPREAD_BPS": "650",
     "MIN_COMPLETE_SET_EDGE_BPS": "28",

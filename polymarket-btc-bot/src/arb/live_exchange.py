@@ -29,6 +29,7 @@ from .neg_risk_converter import (
 )
 
 logger = structlog.get_logger(__name__)
+_POSITION_DUST_SHARES = 0.01
 
 
 class LiveClobExchange(PaperExchange):
@@ -146,10 +147,10 @@ class LiveClobExchange(PaperExchange):
 
     def sync_positions_from_clob_trades(self) -> int:
         """
-        Best-effort reconstruction of current holdings from user trade history.
+        Rebuild current holdings by querying CLOB conditional-token balances for traded assets.
 
-        This lets live equity/open_positions reflect positions opened in previous sessions
-        (or outside this process) rather than only this runtime's local ledger.
+        Trade history is used to discover candidate token ids and metadata; authoritative size
+        comes from `get_balance_allowance(asset_type=CONDITIONAL, token_id=...)`.
         """
         try:
             trades = self._client.get_trades()
@@ -167,14 +168,24 @@ class LiveClobExchange(PaperExchange):
         if not rows:
             return 0
 
-        agg: dict[str, dict[str, float | str]] = {}
-        # API returns newest first; replay oldest→newest for stable avg-price updates.
+        # Per-token metadata and rough avg-price estimate from trade history.
+        est: dict[str, dict[str, float | str]] = {}
+        ordered_tokens: list[str] = []
+        seen_tokens: set[str] = set()
+        # API returns newest first.
+        candidate_cap = 500
         for t in reversed(rows):
             if str(t.get("status", "")).upper() != "CONFIRMED":
                 continue
             token_id = str(t.get("asset_id") or t.get("token_id") or "").strip()
             if not token_id:
                 continue
+            if token_id not in seen_tokens:
+                seen_tokens.add(token_id)
+                ordered_tokens.append(token_id)
+                if len(ordered_tokens) >= candidate_cap:
+                    # Enough candidates for practical open-position reconstruction.
+                    pass
             side = str(t.get("side", "")).upper()
             try:
                 size = float(t.get("size") or 0.0)
@@ -183,35 +194,60 @@ class LiveClobExchange(PaperExchange):
                 continue
             if size <= 1e-12:
                 continue
-            rec = agg.setdefault(
+            rec = est.setdefault(
                 token_id,
                 {
-                    "size": 0.0,
+                    "buy_size": 0.0,
                     "avg_price": 0.0,
                     "market_id": str(t.get("market") or ""),
                     "outcome_name": str(t.get("outcome") or ""),
                 },
             )
-            cur = float(rec["size"])
+            cur = float(rec["buy_size"])
             avg = float(rec["avg_price"])
             if side == "BUY":
                 total = cur + size
                 if total > 1e-12:
                     rec["avg_price"] = ((cur * avg) + (size * price)) / total
-                    rec["size"] = total
-            elif side == "SELL":
-                rem = cur - size
-                rec["size"] = rem if rem > 1e-12 else 0.0
+                    rec["buy_size"] = total
+
+        # Query authoritative conditional-token balances for candidate assets.
+        bal_by_token: dict[str, float] = {}
+        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+
+        for token_id in ordered_tokens[:candidate_cap]:
+            best_raw = -1
+            for sig in (2, 1, 0):
+                try:
+                    b = self._client.get_balance_allowance(
+                        BalanceAllowanceParams(
+                            asset_type=AssetType.CONDITIONAL,
+                            token_id=token_id,
+                            signature_type=sig,
+                        )
+                    )
+                    if not isinstance(b, dict):
+                        continue
+                    br = int(b.get("balance", 0) or 0)
+                    if br > best_raw:
+                        best_raw = br
+                except Exception:
+                    continue
+            if best_raw > 0:
+                # CLOB conditional balances use 6 decimals.
+                bal = float(best_raw) / 1e6
+                if bal >= _POSITION_DUST_SHARES:
+                    bal_by_token[token_id] = bal
 
         rebuilt: dict[str, PositionRecord] = {}
-        for token_id, r in agg.items():
-            sz = float(r["size"])
+        for token_id, sz in bal_by_token.items():
             if sz <= 1e-9:
                 continue
+            r = est.get(token_id, {})
             meta = self._token_meta.get(token_id, {})
-            market_id = str(meta.get("market_id") or r["market_id"] or "")
+            market_id = str(meta.get("market_id") or r.get("market_id") or "")
             event_id = str(meta.get("event_id") or (f"external:{market_id}" if market_id else "external"))
-            outcome_name = str(meta.get("outcome_name") or r["outcome_name"] or "Unknown")
+            outcome_name = str(meta.get("outcome_name") or r.get("outcome_name") or "Unknown")
             contract_side = str(meta.get("contract_side") or ("YES" if outcome_name.lower() == "yes" else "NO"))
             rebuilt[token_id] = PositionRecord(
                 token_id=token_id,
@@ -225,7 +261,13 @@ class LiveClobExchange(PaperExchange):
             )
 
         self._positions = rebuilt
-        logger.info("live_exchange.positions_synced", positions=len(rebuilt), trades_seen=len(rows))
+        logger.info(
+            "live_exchange.positions_synced",
+            positions=len(rebuilt),
+            candidate_tokens=min(len(ordered_tokens), candidate_cap),
+            balances_positive=len(bal_by_token),
+            trades_seen=len(rows),
+        )
         return len(rebuilt)
 
     def _ensure_ctf_approved_once(self) -> None:

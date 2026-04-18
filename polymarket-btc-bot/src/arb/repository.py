@@ -13,7 +13,7 @@ from ..storage.db import _DB_PATH
 from .models import ArbEvent, ArbOpportunity, BasketRecord, FillRecord, OrderRecord, PositionRecord, TokenBook
 
 logger = structlog.get_logger(__name__)
-_SQLITE_BUSY_TIMEOUT_MS = 15000
+_SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
 @asynccontextmanager

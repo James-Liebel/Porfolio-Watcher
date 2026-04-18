@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import aiosqlite
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+# Match arb repository: WAL + long busy wait so API reads (deposits, /summary) do not fail
+# while the engine holds the DB during long cycles (record_book, batch upserts).
+_SQLITE_BUSY_TIMEOUT_MS = 30000
 
 _DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "trades.db")
 
@@ -83,8 +88,19 @@ class Database:
         self._path = os.path.abspath(path)
         os.makedirs(os.path.dirname(self._path), exist_ok=True)
 
+    @asynccontextmanager
+    async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
+        async with aiosqlite.connect(self._path, timeout=60.0) as db:
+            await db.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
+            try:
+                await db.execute("PRAGMA journal_mode = WAL")
+            except Exception:
+                pass
+            await db.execute("PRAGMA synchronous = NORMAL")
+            yield db
+
     async def init(self) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             await db.execute(_CREATE_TRADES)
             await db.execute(_CREATE_DAILY)
             await db.execute(_CREATE_DEPOSITS)
@@ -132,7 +148,7 @@ class Database:
             getattr(trade, "repost_count", 0),
             getattr(trade, "reason", ""),
         )
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(sql, params)
             await db.commit()
             row_id = cursor.lastrowid
@@ -141,14 +157,14 @@ class Database:
 
     async def update_trade_outcome(self, row_id: int, outcome: str, pnl: float) -> None:
         sql = "UPDATE trades SET outcome=?, pnl=? WHERE id=?"
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             await db.execute(sql, (outcome, pnl, row_id))
             await db.commit()
 
     async def get_today_stats(self) -> Optional[Dict[str, Any]]:
         today = str(date.today())
         sql = "SELECT * FROM daily_summary WHERE date=?"
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql, (today,)) as cursor:
                 row = await cursor.fetchone()
@@ -157,7 +173,7 @@ class Database:
                 base = dict(row)
 
         # Augment with live trade-level stats not stored in daily_summary
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             # Total rebates today
             async with db.execute(
                 "SELECT COALESCE(SUM(maker_rebate_earned),0) FROM trades WHERE date(timestamp)=?",
@@ -190,7 +206,7 @@ class Database:
         from datetime import datetime, timezone
         sql = "INSERT INTO deposits (timestamp, amount, note) VALUES (?,?,?)"
         params = (datetime.now(timezone.utc).isoformat(), amount, note)
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(sql, params)
             await db.commit()
             row_id = cursor.lastrowid
@@ -200,7 +216,7 @@ class Database:
     async def get_total_deposits(self) -> float:
         """Sum of all recorded deposits (used to initialise bankroll on restart)."""
         sql = "SELECT COALESCE(SUM(amount), 0.0) FROM deposits"
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             async with db.execute(sql) as cursor:
                 row = await cursor.fetchone()
                 return float(row[0]) if row else 0.0
@@ -208,7 +224,7 @@ class Database:
     async def get_deposits(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Return recent deposit records, newest first."""
         sql = "SELECT * FROM deposits ORDER BY id DESC LIMIT ?"
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql, (limit,)) as cursor:
                 rows = await cursor.fetchall()
@@ -216,7 +232,7 @@ class Database:
 
     async def get_all_trades(self, limit: int = 100) -> List[Dict[str, Any]]:
         sql = "SELECT * FROM trades ORDER BY id DESC LIMIT ?"
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql, (limit,)) as cursor:
                 rows = await cursor.fetchall()
@@ -234,7 +250,7 @@ class Database:
             WHERE date(timestamp) = ?
             GROUP BY asset
         """
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             async with db.execute(sql, (today,)) as cursor:
                 rows = await cursor.fetchall()
         result: Dict[str, Dict[str, Any]] = {}
@@ -268,7 +284,7 @@ class Database:
                 ELSE 4
               END
         """
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql) as cursor:
                 rows = await cursor.fetchall()
@@ -284,7 +300,7 @@ class Database:
               SUM(CASE WHEN reason='expired' THEN 1 ELSE 0 END) AS expired_orders
             FROM trades
         """
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql) as cursor:
                 row = await cursor.fetchone()
@@ -332,6 +348,6 @@ class Database:
             stats.get("starting_bankroll", 0.0),
             stats.get("ending_bankroll", 0.0),
         )
-        async with aiosqlite.connect(self._path) as db:
+        async with self._connect() as db:
             await db.execute(sql, params)
             await db.commit()

@@ -47,7 +47,9 @@ _SHARED_LIVE: dict[str, str] = {
     "ARB_MAX_BASKET_NOTIONAL_QUALIFIED_MULTIPLIER": "1.35",
     "ARB_MAX_BASKET_NOTIONAL_QUALIFIED_ABS_MAX": "0",
     "MAX_EVENT_EXPOSURE_PCT": "0.55",
-    "ARB_STRATEGY_MODE": "both",
+    # Strict structural mode: only official neg-risk conversion events.
+    # Avoids directional baskets on loosely related "by date" markets.
+    "ARB_STRATEGY_MODE": "neg_risk",
     "ARB_ADAPTIVE_EVENT_BUDGET_ENABLED": "true",
     "ARB_ADAPTIVE_EVENT_BUDGET_MIN": "360",
     "ARB_ADAPTIVE_EVENT_BUDGET_MAX": "1400",
@@ -60,7 +62,8 @@ _SHARED_LIVE: dict[str, str] = {
     "MIN_COMPLETE_SET_EDGE_BPS": "20",
     "MIN_NEG_RISK_EDGE_BPS": "32",
     "ARB_MIN_EXPECTED_PROFIT_USD": "0.12",
-    "UNIVERSE_MAX_HOURS_TO_RESOLUTION": "0",
+    "UNIVERSE_MAX_HOURS_TO_RESOLUTION": "96",
+    "UNIVERSE_MIN_HOURS_TO_RESOLUTION": "1",
     "UNIVERSE_PREFER_SHORTER_RESOLUTION": "true",
     "OPPORTUNITY_COOLDOWN_SECONDS": "60",
     "AUTO_SETTLE_RESOLVED_EVENTS": "true",

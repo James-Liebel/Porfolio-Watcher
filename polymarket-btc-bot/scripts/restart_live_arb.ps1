@@ -1,4 +1,5 @@
-# Stop listeners on common bot ports, then start one paper structural arb.
+# Stop all listeners on common bot ports, kill stray python processes for this repo,
+# then start exactly one LIVE structural arb (start_live_arb.py --yes).
 # Run from repo root or anywhere (script cd's to polymarket-btc-bot).
 
 $ErrorActionPreference = "SilentlyContinue"
@@ -34,7 +35,7 @@ $botRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $botRoot
 
 Write-Host ""
-Write-Host "Starting single paper structural arb..."
+Write-Host "Starting single LIVE structural arb..."
 Write-Host ""
 
-& "$botRoot\.venv\Scripts\python.exe" "$botRoot\scripts\start_paper_arb.py" @args
+& "$botRoot\.venv\Scripts\python.exe" "$botRoot\scripts\start_live_arb.py" --yes @args

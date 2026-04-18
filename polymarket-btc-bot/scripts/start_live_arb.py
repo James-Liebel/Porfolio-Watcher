@@ -55,13 +55,14 @@ _SHARED_LIVE: dict[str, str] = {
     # Keep live bot resilient during thin/fast books: do not hard-halt after a few failed baskets.
     "ARB_CONSECUTIVE_EXECUTION_FAILURES_HALT": "0",
     "ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE": "0",
-    "MAX_ARB_LEG_SPREAD_BPS": "650",
-    "MIN_COMPLETE_SET_EDGE_BPS": "28",
-    "MIN_NEG_RISK_EDGE_BPS": "999999",
-    "ARB_MIN_EXPECTED_PROFIT_USD": "0.18",
+    # Probe-friendly floors: markets often show negative theoretical edge until a brief dislocation appears.
+    "MAX_ARB_LEG_SPREAD_BPS": "800",
+    "MIN_COMPLETE_SET_EDGE_BPS": "20",
+    "MIN_NEG_RISK_EDGE_BPS": "32",
+    "ARB_MIN_EXPECTED_PROFIT_USD": "0.12",
     "UNIVERSE_MAX_HOURS_TO_RESOLUTION": "0",
     "UNIVERSE_PREFER_SHORTER_RESOLUTION": "true",
-    "OPPORTUNITY_COOLDOWN_SECONDS": "90",
+    "OPPORTUNITY_COOLDOWN_SECONDS": "60",
     "AUTO_SETTLE_RESOLVED_EVENTS": "true",
     "COMPLETE_SET_AUTO_UNWIND": "true",
     "COMPLETE_SET_UNWIND_VS_RESOLUTION": "true",
@@ -85,6 +86,25 @@ def _win_kill_port(port: int) -> None:
     ps = (
         f"$c = Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue "
         f"| Select-Object -First 1; if ($c) {{ Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue }}"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", ps],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+    )
+
+
+def kill_existing_bot_processes() -> None:
+    """Stop stray bot processes: `python -m src` or live/paper launchers (not pytest/pip)."""
+    if sys.platform != "win32":
+        return
+    ps = (
+        "$p = Get-CimInstance Win32_Process | "
+        "Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*polymarket-btc-bot*' -and "
+        "($_.CommandLine -like '* -m src*' -or $_.CommandLine -like '*start_live_arb*' -or "
+        "$_.CommandLine -like '*start_paper_arb*') }; "
+        "$p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
     )
     subprocess.run(
         ["powershell", "-NoProfile", "-Command", ps],
@@ -179,8 +199,11 @@ def main() -> int:
             print("Cancelled.")
             return 0
 
-    # Free this port and the old second-agent port from the split layout.
-    print(f"\nClearing ports {port} and 8767 (legacy second agent)…")
+    # Ensure a single runtime: kill duplicate repo PIDs, then listeners.
+    print("\nStopping any existing bot processes for this repo…")
+    kill_existing_bot_processes()
+    time.sleep(2)
+    print(f"Clearing ports {port} and 8767 (legacy second agent)…")
     kill_listen_ports([port, 8767])
     time.sleep(1.5)
 

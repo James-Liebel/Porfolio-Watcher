@@ -273,6 +273,9 @@ class ArbEngine:
         await self.initialize()
         async with self._cycle_lock:
             cycle_t0 = time.monotonic()
+            # UI/API: do not leave cycle_step as "idle" during Gamma + SQLite work (can be minutes).
+            self._current_cycle_step = "loading_universe"
+            self._current_cycle_pct = None
             await self._maybe_sync_clob_collateral()
             await self._persist_runtime_state()
             self._last_auto_settlements = []
@@ -282,8 +285,7 @@ class ArbEngine:
             for event in events:
                 self._events[event.event_id] = event
             self._exchange.update_universe(events)
-            for event in events:
-                await self._repository.upsert_event(event)
+            await self._repository.upsert_events_batch(events)
 
             self._current_cycle_step = "fetching_books"
             self._current_cycle_pct = 0.0

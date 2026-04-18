@@ -165,7 +165,10 @@ function renderDiagnostics(s) {
   const d = s.last_cycle && s.last_cycle.diagnostics;
   const step = String(s.cycle_step || "").toLowerCase();
   const busy =
-    step === "fetching_books" || step === "evaluating" || step === "scanning";
+    step === "loading_universe" ||
+    step === "fetching_books" ||
+    step === "evaluating" ||
+    step === "scanning";
   if (!d || typeof d !== "object") {
     if (busy) {
       el.innerHTML =
@@ -271,10 +274,15 @@ function renderProgress(s) {
 
   if (indeterminate) {
     if (stepLabel) {
-      stepLabel.textContent =
-        stepRaw === "fetching_books"
-          ? "Fetching Polymarket order books…"
-          : "Running scanner, risk checks, execution, and settlement…";
+      if (stepRaw === "loading_universe") {
+        stepLabel.textContent =
+          "Loading event universe (Gamma + database) — this can take a minute…";
+      } else if (stepRaw === "fetching_books") {
+        stepLabel.textContent = "Fetching Polymarket order books…";
+      } else {
+        stepLabel.textContent =
+          "Running scanner, risk checks, execution, and settlement…";
+      }
     }
     if (pctLabel) pctLabel.textContent = "…";
     if (bar) {

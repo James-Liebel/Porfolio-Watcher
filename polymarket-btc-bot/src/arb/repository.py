@@ -359,6 +359,96 @@ class ArbRepository:
                 )
             await db.commit()
 
+    async def upsert_events_batch(self, events: list[ArbEvent]) -> None:
+        """Persist universe snapshot with one SQLite transaction (avoids per-event connect/commit)."""
+        if not events:
+            return
+        sql_event = """
+        INSERT INTO arb_events (
+            id, title, category, neg_risk, enable_neg_risk, neg_risk_augmented,
+            status, liquidity, rules_text, end_time, raw_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            title=excluded.title,
+            category=excluded.category,
+            neg_risk=excluded.neg_risk,
+            enable_neg_risk=excluded.enable_neg_risk,
+            neg_risk_augmented=excluded.neg_risk_augmented,
+            status=excluded.status,
+            liquidity=excluded.liquidity,
+            rules_text=excluded.rules_text,
+            end_time=excluded.end_time,
+            raw_json=excluded.raw_json,
+            updated_at=excluded.updated_at
+        """
+        sql_market = """
+                    INSERT INTO arb_markets (
+                        id, event_id, question, outcome_name, yes_token_id, no_token_id,
+                        current_yes_price, current_no_price, liquidity, tick_size,
+                        fees_enabled, status, raw_json, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        event_id=excluded.event_id,
+                        question=excluded.question,
+                        outcome_name=excluded.outcome_name,
+                        yes_token_id=excluded.yes_token_id,
+                        no_token_id=excluded.no_token_id,
+                        current_yes_price=excluded.current_yes_price,
+                        current_no_price=excluded.current_no_price,
+                        liquidity=excluded.liquidity,
+                        tick_size=excluded.tick_size,
+                        fees_enabled=excluded.fees_enabled,
+                        status=excluded.status,
+                        raw_json=excluded.raw_json,
+                        updated_at=excluded.updated_at
+                    """
+        async with _connect(self._path) as db:
+            for event in events:
+                updated_at = (
+                    event.raw.get("updatedAt", "")
+                    or event.raw.get("updated_at", "")
+                    or event.end_time
+                    or "unknown"
+                )
+                await db.execute(
+                    sql_event,
+                    (
+                        event.event_id,
+                        event.title,
+                        event.category,
+                        1 if event.neg_risk else 0,
+                        1 if event.enable_neg_risk else 0,
+                        1 if event.neg_risk_augmented else 0,
+                        event.status,
+                        float(event.liquidity),
+                        event.rules_text,
+                        event.end_time,
+                        json.dumps(event.raw, default=str),
+                        updated_at,
+                    ),
+                )
+                for market in event.markets:
+                    await db.execute(
+                        sql_market,
+                        (
+                            market.market_id,
+                            market.event_id,
+                            market.question,
+                            market.outcome_name,
+                            market.yes_token_id,
+                            market.no_token_id,
+                            float(market.current_yes_price),
+                            float(market.current_no_price),
+                            float(market.liquidity),
+                            float(market.tick_size),
+                            1 if market.fees_enabled else 0,
+                            market.status,
+                            json.dumps(market.raw, default=str),
+                            updated_at,
+                        ),
+                    )
+            await db.commit()
+
     async def record_book(self, book: TokenBook) -> None:
         async with _connect(self._path) as db:
             await db.execute(

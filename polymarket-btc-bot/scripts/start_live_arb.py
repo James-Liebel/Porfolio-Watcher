@@ -96,21 +96,27 @@ def _win_kill_port(port: int) -> None:
 
 
 def kill_existing_bot_processes() -> None:
-    """Stop stray bot processes: `python -m src` or live/paper launchers (not pytest/pip)."""
+    """Stop stray `python -m src` runtimes for this repo only.
+
+    Do not match `start_live_arb.py` / `start_paper_arb.py` — those command lines must never
+    be killed from inside this launcher (WMI/PowerShell edge cases can still terminate the
+    launcher if it appears in the same filter set).
+    """
     if sys.platform != "win32":
         return
+    my_pid = int(os.getpid())
     ps = (
         "$p = Get-CimInstance Win32_Process | "
-        "Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*polymarket-btc-bot*' -and "
-        "($_.CommandLine -like '* -m src*' -or $_.CommandLine -like '*start_live_arb*' -or "
-        "$_.CommandLine -like '*start_paper_arb*') }; "
+        f"Where-Object {{ $_.Name -eq 'python.exe' -and $_.ProcessId -ne {my_pid} -and "
+        "$_.CommandLine -like '*polymarket-btc-bot*' -and $_.CommandLine -like '* -m src*' }; "
         "$p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
     )
     subprocess.run(
         ["powershell", "-NoProfile", "-Command", ps],
         cwd=str(ROOT),
-        capture_output=True,
-        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
 
@@ -199,12 +205,18 @@ def main() -> int:
             print("Cancelled.")
             return 0
 
-    # Ensure a single runtime: kill duplicate repo PIDs, then listeners.
-    print("\nStopping any existing bot processes for this repo…")
-    kill_existing_bot_processes()
+    # Ensure a single runtime: kill old `python -m src`, then listeners (restart script also cleans).
+    print("\nStopping any existing `python -m src` for this repo…", flush=True)
+    try:
+        kill_existing_bot_processes()
+    except OSError as exc:
+        print(f"[WARN] Process cleanup failed (continuing): {exc}", flush=True)
     time.sleep(2)
-    print(f"Clearing ports {port} and 8767 (legacy second agent)…")
-    kill_listen_ports([port, 8767])
+    print(f"Clearing ports {port} and 8767 (legacy second agent)…", flush=True)
+    try:
+        kill_listen_ports([port, 8767])
+    except OSError as exc:
+        print(f"[WARN] Port cleanup failed (continuing): {exc}", flush=True)
     time.sleep(1.5)
 
     (ROOT / "data").mkdir(parents=True, exist_ok=True)
@@ -234,7 +246,7 @@ def main() -> int:
         env=env,
         **_popen_kwargs(),
     )
-    print(f"[OK] Started live arb  PID {proc.pid}")
+    print(f"[OK] Started live arb  child PID {proc.pid}", flush=True)
     print()
     print(f"  Dashboard: http://127.0.0.1:{port}/ui/index.html")
     print(f"  Summary:   http://127.0.0.1:{port}/summary")

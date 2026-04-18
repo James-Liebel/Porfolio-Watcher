@@ -34,8 +34,28 @@ Start-Sleep -Seconds 2
 $botRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $botRoot
 
+$py = Join-Path $botRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $py)) {
+    Write-Host ('[X] Missing ' + $py + ' - create venv or fix path.')
+    exit 1
+}
+
 Write-Host ""
-Write-Host "Starting single LIVE structural arb..."
+Write-Host "Opening a new window for the live bot (gates + child process)..."
 Write-Host ""
 
-& "$botRoot\.venv\Scripts\python.exe" "$botRoot\scripts\start_live_arb.py" --yes @args
+# New window so logs stay visible; avoids the launcher looking like it 'did nothing' when run from a script host.
+$tail = ''
+if ($args.Count -gt 0) {
+    $tail = ' ' + ($args -join ' ')
+}
+$innerCmd = "Set-Location -LiteralPath '$botRoot'; & '$py' '$botRoot\scripts\start_live_arb.py' --yes$tail"
+$argList = @(
+    '-NoExit'
+    '-NoProfile'
+    '-ExecutionPolicy', 'Bypass'
+    '-Command'
+    $innerCmd
+)
+Start-Process -FilePath "powershell.exe" -WorkingDirectory $botRoot -ArgumentList $argList
+Write-Host '[OK] Launched. Watch the new PowerShell window for [OK] Started live arb / gate errors.'

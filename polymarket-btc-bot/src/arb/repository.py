@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +13,16 @@ from ..storage.db import _DB_PATH
 from .models import ArbEvent, ArbOpportunity, BasketRecord, FillRecord, OrderRecord, PositionRecord, TokenBook
 
 logger = structlog.get_logger(__name__)
+_SQLITE_BUSY_TIMEOUT_MS = 15000
+
+
+@asynccontextmanager
+async def _connect(path: str):
+    async with aiosqlite.connect(path, timeout=30.0) as db:
+        await db.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
+        await db.execute("PRAGMA journal_mode = WAL")
+        await db.execute("PRAGMA synchronous = NORMAL")
+        yield db
 
 _CREATE_EVENTS = """
 CREATE TABLE IF NOT EXISTS arb_events (
@@ -214,7 +225,7 @@ class ArbRepository:
         os.makedirs(os.path.dirname(self._path), exist_ok=True)
 
     async def init(self) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             for sql in (
                 _CREATE_EVENTS,
                 _CREATE_MARKETS,
@@ -235,7 +246,7 @@ class ArbRepository:
         logger.info("arb_repository.initialized", path=self._path)
 
     async def trader_follow_seen(self, tx_hash: str) -> bool:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             cur = await db.execute(
                 "SELECT 1 FROM arb_trader_follow_seen WHERE tx_hash = ? LIMIT 1",
                 (tx_hash,),
@@ -251,7 +262,7 @@ class ArbRepository:
         token_id: str,
         side: str,
     ) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute(
                 """
                 INSERT OR IGNORE INTO arb_trader_follow_seen
@@ -288,7 +299,7 @@ class ArbRepository:
             updated_at=excluded.updated_at
         """
         updated_at = event.raw.get("updatedAt", "") or event.raw.get("updated_at", "") or event.end_time or "unknown"
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute(
                 sql,
                 (
@@ -349,7 +360,7 @@ class ArbRepository:
             await db.commit()
 
     async def record_book(self, book: TokenBook) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute(
                 """
                 INSERT INTO arb_books (
@@ -376,7 +387,7 @@ class ArbRepository:
         payload = opportunity.as_dict()
         payload["decision"] = decision or payload["decision"]
         payload["reason"] = reason or payload["reason"]
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute(
                 """
                 INSERT INTO arb_opportunities (
@@ -415,7 +426,7 @@ class ArbRepository:
         await self._upsert_basket(basket)
 
     async def _upsert_basket(self, basket: BasketRecord) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute(
                 """
                 INSERT INTO arb_baskets (
@@ -449,7 +460,7 @@ class ArbRepository:
             await db.commit()
 
     async def record_order(self, order: OrderRecord) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute(
                 """
                 INSERT INTO arb_orders (
@@ -489,7 +500,7 @@ class ArbRepository:
             await db.commit()
 
     async def record_fill(self, fill: FillRecord) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO arb_fills (
@@ -514,7 +525,7 @@ class ArbRepository:
             await db.commit()
 
     async def replace_positions(self, positions: list[PositionRecord]) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute("DELETE FROM arb_positions")
             for position in positions:
                 await db.execute(
@@ -566,7 +577,7 @@ class ArbRepository:
         requested_at: str,
         completed_at: str,
     ) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute(
                 """
                 INSERT INTO arb_conversions (
@@ -589,7 +600,7 @@ class ArbRepository:
             await db.commit()
 
     async def record_settlement(self, event_id: str, resolution_market_id: str, pnl_realized: float, timestamp: str) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute(
                 """
                 INSERT INTO arb_settlements (event_id, resolution_market_id, pnl_realized, timestamp)
@@ -609,7 +620,7 @@ class ArbRepository:
         rebates_earned: float,
         updated_at: str,
     ) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute(
                 """
                 INSERT INTO arb_runtime_state (
@@ -642,7 +653,7 @@ class ArbRepository:
         return rows[0] if rows else None
 
     async def save_cooldowns(self, cooldowns: dict[str, datetime]) -> None:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             await db.execute("DELETE FROM arb_cooldowns")
             for key, expires_at in cooldowns.items():
                 await db.execute(
@@ -671,7 +682,7 @@ class ArbRepository:
         return result
 
     async def _fetch_all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        async with aiosqlite.connect(self._path) as db:
+        async with _connect(self._path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql, params) as cursor:
                 rows = await cursor.fetchall()

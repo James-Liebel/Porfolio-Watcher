@@ -239,7 +239,7 @@ def main() -> int:
     )
     n_cpu = cpu_count_safe()
     print(
-        f"  Host tuning: CPUs≈{n_cpu}  CLOB_CONC={host_tuning['CLOB_BOOK_FETCH_CONCURRENCY']}  "
+        f"  Host tuning: CPUs~{n_cpu}  CLOB_CONC={host_tuning['CLOB_BOOK_FETCH_CONCURRENCY']}  "
         f"MAX_TRACKED_EVENTS={host_tuning['MAX_TRACKED_EVENTS']}  POLL={host_tuning['ARB_POLL_SECONDS']}s"
     )
 

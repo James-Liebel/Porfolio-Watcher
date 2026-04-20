@@ -212,6 +212,8 @@ class ArbRiskManager:
             "equity": round(exchange.equity, 4),
             "contributed_capital": round(exchange.contributed_capital, 4),
             "realized_pnl": round(exchange.realized_pnl, 4),
+            "unrealized_arb_pnl": round(exchange.equity - exchange.contributed_capital, 4),
+            "pending_arb_basis": round(sum(p.avg_price * p.size for p in exchange.get_positions()), 4),
             "fees_paid": round(exchange.fees_paid, 4),
             "rebates_earned": round(exchange.rebates_earned, 4),
             "open_positions": len(exchange.get_positions()),

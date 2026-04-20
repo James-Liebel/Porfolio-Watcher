@@ -354,6 +354,13 @@ class ArbEngine:
                 )
 
             for opportunity in opportunities:
+                if executed >= self._config.max_opportunities_per_cycle:
+                    await self._repository.record_opportunity(
+                        opportunity,
+                        decision="skipped_cycle_cap",
+                        reason=f"cycle execution cap reached ({self._config.max_opportunities_per_cycle})",
+                    )
+                    continue
                 open_baskets = self._open_basket_count()
                 approved, reason = self._risk.approve(
                     opportunity,
@@ -369,33 +376,38 @@ class ArbEngine:
                 )
                 if not approved:
                     continue
-                if executed >= self._config.max_opportunities_per_cycle:
-                    break
                 basket = await self._execute_opportunity(opportunity)
                 if basket is not None:
                     executed += 1
                     self._risk.record_execution_success()
                     self._risk.record_execution(opportunity)
 
-            from ..alpha.overlay import run_directional_overlay
-            from ..alpha.trader_follow import run_trader_follow
+            cfg = self._config
+            live = bool(cfg.arb_live_execution) and not bool(cfg.paper_trade)
+            # Paper: optional news / copy sleeves. Live: skip overlay (paper-only); trader-follow
+            # only if both ENABLE_TRADER_FOLLOW and TRADER_FOLLOW_ALLOW_LIVE are set.
+            if not live:
+                from ..alpha.overlay import run_directional_overlay
 
-            await run_directional_overlay(
-                self,
-                events,
-                books,
-                real_books,
-                len(opportunities),
-                executed,
-            )
-            await run_trader_follow(
-                self,
-                events,
-                books,
-                real_books,
-                len(opportunities),
-                executed,
-            )
+                await run_directional_overlay(
+                    self,
+                    events,
+                    books,
+                    real_books,
+                    len(opportunities),
+                    executed,
+                )
+            if not live or (cfg.enable_trader_follow and cfg.trader_follow_allow_live):
+                from ..alpha.trader_follow import run_trader_follow
+
+                await run_trader_follow(
+                    self,
+                    events,
+                    books,
+                    real_books,
+                    len(opportunities),
+                    executed,
+                )
 
             await self._repository.replace_positions(self._exchange.get_positions())
             await self._persist_runtime_state()
@@ -563,6 +575,14 @@ class ArbEngine:
     async def _execute_neg_risk_basket(self, opportunity: ArbOpportunity, basket: BasketRecord) -> None:
         if not opportunity.convert_from_market_id:
             raise RuntimeError("neg-risk opportunity missing source market")
+        logger.info(
+            "arb_engine.neg_risk_conversion_start",
+            basket_id=basket.basket_id,
+            event_id=opportunity.event_id,
+            source_market_id=opportunity.convert_from_market_id,
+            n_sell_legs=max(0, len(opportunity.legs) - 1),
+            hint="Polymarket activity lists buy/convert/sell separately; first line is often one NO buy.",
+        )
         buy_leg = opportunity.legs[0]
         buy_order = await self._place_leg(
             basket_id=basket.basket_id,
@@ -614,6 +634,15 @@ class ArbEngine:
                 continue
             book = self._exchange.book_for_token(position.token_id)
             if book is None or book.best_bid <= 0:
+                logger.warning(
+                    "arb_engine.unwind_position_abandoned",
+                    token_id=position.token_id,
+                    event_id=event_id,
+                    size=round(position.size, 6),
+                    avg_price=round(position.avg_price, 6),
+                    reason="no_bid_for_unwind",
+                    note="Position remains in ledger — manually settle via POST /settle to clear exposure.",
+                )
                 continue
             intent = OrderIntent(
                 basket_id=basket_id,

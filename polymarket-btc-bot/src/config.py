@@ -187,7 +187,7 @@ class Settings(BaseSettings):
     )
     # 0 = disabled. Max (ask−bid)/mid in bps for each CLOB leg in a structural basket; skips wide/fragile books.
     max_arb_leg_spread_bps: float = Field(
-        default=750.0,
+        default=300.0,
         alias="MAX_ARB_LEG_SPREAD_BPS",
     )
     # 0 = disabled. Drop opportunities with expected_profit below this (after fees in the scanner).

@@ -113,7 +113,7 @@ class LiveClobExchange(PaperExchange):
             return None
         clob_free, sig, ok_reads = fetched
         old_cash = float(self.cash)
-        self.last_clob_collateral_usdc = clob_free
+        prev_clob_free = self.last_clob_collateral_usdc
         reserved = sum(self._reserved_cash.values())
         # Startup / transient guard: if only a subset of signature types answered and the max is 0,
         # avoid snapping cash to zero on a likely partial read (prevents false drawdown halts).
@@ -124,9 +124,14 @@ class LiveClobExchange(PaperExchange):
                 signature_type=sig,
                 successful_signature_reads=ok_reads,
                 old_cash=round(old_cash, 4),
+                previous_clob_free_usdc=(
+                    round(float(prev_clob_free), 4) if isinstance(prev_clob_free, (int, float)) else None
+                ),
             )
             self._last_clob_refresh_mono = time.monotonic()
-            return clob_free
+            # Keep the last known good collateral snapshot for UI/risk until a conclusive refresh lands.
+            return float(prev_clob_free) if isinstance(prev_clob_free, (int, float)) else clob_free
+        self.last_clob_collateral_usdc = clob_free
         new_cash = float(clob_free) + reserved
         delta = new_cash - old_cash
         # Always align ledger to CLOB + reservations when the API responds (fixes drift and FP noise).

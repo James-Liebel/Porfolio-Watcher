@@ -486,6 +486,8 @@ class OpportunityScanner:
     ) -> list[ArbOpportunity]:
         if not self._neg_risk_event_eligible(event):
             return []
+        if not self._config.neg_risk_live_onchain_available():
+            return []
 
         opportunities: list[ArbOpportunity] = []
         for source_market in event.markets:

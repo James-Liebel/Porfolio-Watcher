@@ -779,6 +779,7 @@ def test_scanner_capital_required_matches_exchange_cash_for_complete_set():
         daily_loss_cap=0.99,
         arb_poll_seconds=1,
         max_tracked_events=100,
+        max_arb_leg_spread_bps=0.0,
     )
     complete = [o for o in OpportunityScanner(cfg).scan([event], books) if o.strategy_type == "complete_set"]
     assert len(complete) == 1

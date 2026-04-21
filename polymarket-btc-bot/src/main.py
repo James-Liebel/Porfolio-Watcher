@@ -58,6 +58,20 @@ async def main() -> None:
         sqlite_path=db_path,
         control_port=config.control_api_port,
     )
+    mode = (config.arb_strategy_mode or "").strip().lower()
+    if (
+        not config.paper_trade
+        and config.arb_live_execution
+        and mode in {"neg_risk", "both"}
+        and not config.neg_risk_live_onchain_available()
+    ):
+        log.warning(
+            "arb_bot.neg_risk_live_skipped_for_safe",
+            arb_strategy_mode=mode,
+            clob_signature_type=int(config.clob_signature_type or 0),
+            hint="Neg-risk needs on-chain convert after NO buy; Safe requires relayer. "
+            "Use ARB_STRATEGY_MODE=complete_set (CLOB-only legs) or set ARB_ALLOW_NEG_RISK_LIVE_WITH_SAFE after relayer integration.",
+        )
 
     shutting_down = {"value": False}
 

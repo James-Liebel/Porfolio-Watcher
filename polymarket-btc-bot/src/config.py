@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     )
     # 0=EOA (standard MetaMask wallet), 1=Magic/PolyProxy, 2=Gnosis Safe multisig.
     clob_signature_type: int = Field(default=0, alias="CLOB_SIGNATURE_TYPE")
+    # Neg-risk live execution calls NegRiskAdapter.convertPositions on-chain after buying NO.
+    # With signature_type=2, outcome tokens sit in the Gnosis Safe; raw EOA-signed txs cannot
+    # convert (signer must match `from`). Polymarket documents builder relayer flows instead.
+    # Keep false unless you wire py-builder-relayer-client (or similar).
+    arb_allow_neg_risk_live_with_safe: bool = Field(
+        default=False,
+        alias="ARB_ALLOW_NEG_RISK_LIVE_WITH_SAFE",
+    )
     arb_poll_seconds: int = Field(default=20, alias="ARB_POLL_SECONDS")
     # Extra delay after a failed run_cycle() before the normal poll wait (reduces tight error loops).
     arb_cycle_error_backoff_seconds: int = Field(
@@ -555,6 +563,20 @@ class Settings(BaseSettings):
     # ── Multi-asset risk ─────────────────────────────────────────────────
     max_positions_per_asset: int = Field(default=1, alias="MAX_POSITIONS_PER_ASSET")
     max_total_exposure_pct: float = Field(default=0.40, alias="MAX_TOTAL_EXPOSURE_PCT")
+
+    def neg_risk_live_onchain_available(self) -> bool:
+        """True if live neg-risk baskets may run on-chain conversion after the NO buy.
+
+        Paper mode always True (simulated). Live + Gnosis Safe is False by default because
+        convertPositions must be sent from the Safe (or via Polymarket relayer), not raw EOA.
+        """
+        if self.paper_trade:
+            return True
+        if not self.arb_live_execution:
+            return True
+        if int(self.clob_signature_type or 0) != 2:
+            return True
+        return bool(self.arb_allow_neg_risk_live_with_safe)
 
     def category_is_allowed(self, category: str) -> bool:
         """Return True if category passes allowlist/blocklist filters."""

@@ -47,9 +47,9 @@ _SHARED_LIVE: dict[str, str] = {
     "ARB_MAX_BASKET_NOTIONAL_QUALIFIED_MULTIPLIER": "1.35",
     "ARB_MAX_BASKET_NOTIONAL_QUALIFIED_ABS_MAX": "0",
     "MAX_EVENT_EXPOSURE_PCT": "0.55",
-    # Strict structural mode: only official neg-risk conversion events.
-    # Avoids directional baskets on loosely related "by date" markets.
-    "ARB_STRATEGY_MODE": "neg_risk",
+    # complete_set = CLOB-only YES legs (works with Gnosis Safe). neg_risk needs on-chain convert;
+    # disabled for Safe by default — see ARB_ALLOW_NEG_RISK_LIVE_WITH_SAFE in config.
+    "ARB_STRATEGY_MODE": "both",
     "ARB_ADAPTIVE_EVENT_BUDGET_ENABLED": "true",
     "ARB_ADAPTIVE_EVENT_BUDGET_MIN": "360",
     "ARB_ADAPTIVE_EVENT_BUDGET_MAX": "1400",

@@ -297,6 +297,13 @@ class LiveClobExchange(PaperExchange):
 
         The YES token quantities mirror what the PaperExchange would compute.
         """
+        if not self._config.neg_risk_live_onchain_available():
+            raise RuntimeError(
+                "Live neg-risk conversion is disabled for Gnosis Safe (CLOB_SIGNATURE_TYPE=2): "
+                "on-chain convertPositions must be sent from the Safe or Polymarket relayer, "
+                "not a raw EOA-signed tx. Set ARB_ALLOW_NEG_RISK_LIVE_WITH_SAFE=true only after "
+                "wiring py-builder-relayer-client, or use ARB_STRATEGY_MODE=complete_set, or an EOA wallet."
+            )
         # ── validate source market ────────────────────────────────────────────
         source_market = event.market_by_id(source_market_id)
         if source_market is None:

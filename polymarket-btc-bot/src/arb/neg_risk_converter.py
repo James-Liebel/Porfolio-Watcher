@@ -11,6 +11,11 @@ beyond the NO tokens already in the wallet.
 Reference:
   NegRiskAdapter: 0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296 (Polygon)
   Source: https://github.com/Polymarket/neg-risk-ctf-adapter
+
+Gnosis Safe (Polymarket CLOB signature_type=2): outcome tokens sit in the Safe. Raw
+`web3.eth.account.sign_transaction` with the EOA key cannot send `from=Safe` (signer mismatch),
+and `from=EOA` would not hold the NO tokens. Use Polymarket's builder relayer client for
+conversion, or keep neg-risk live disabled (see Settings.neg_risk_live_onchain_available).
 """
 from __future__ import annotations
 

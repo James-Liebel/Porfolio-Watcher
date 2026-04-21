@@ -573,6 +573,12 @@ class ArbEngine:
             return None
 
     async def _execute_neg_risk_basket(self, opportunity: ArbOpportunity, basket: BasketRecord) -> None:
+        if not self._config.neg_risk_live_onchain_available():
+            raise RuntimeError(
+                "neg-risk live execution blocked for Gnosis Safe: on-chain conversion is not wired. "
+                "Use complete_set mode, EOA (CLOB_SIGNATURE_TYPE=0), or enable ARB_ALLOW_NEG_RISK_LIVE_WITH_SAFE "
+                "after integrating Polymarket relayer conversion."
+            )
         if not opportunity.convert_from_market_id:
             raise RuntimeError("neg-risk opportunity missing source market")
         logger.info(

@@ -38,6 +38,7 @@
     "min_outcomes_per_event": 2,
     "min_complete_set_edge_bps": 10.0,
     "min_neg_risk_edge_bps": 10.0,
+    "max_arb_leg_spread_bps": 750.0,
     "max_event_exposure_pct": 1.0,
     "max_basket_notional": 3.75,
     "max_total_open_baskets": 10,

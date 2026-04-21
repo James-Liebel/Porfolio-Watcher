@@ -93,6 +93,7 @@ class ArbEngine:
         self._current_cycle_pct: float | None = 0.0
         self._current_cycle_step = "idle"
         self._complete_set_hold_log_mono: dict[str, float] = {}
+        self._last_basket_cash_limit_log_mono: float = 0.0
         self._adaptive_event_target = int(config.max_tracked_events)
 
     @property
@@ -333,8 +334,21 @@ class ArbEngine:
 
             auto_settled = await self._auto_settle_resolved_events_locked()
             complete_set_unwound = await self._maybe_unwind_complete_set_baskets()
-            base_max = self._effective_base_max_basket_notional()
-            base_max = self._clamp_basket_notional_to_available_cash(base_max)
+            # Recomputed every cycle (after CLOB sync above): deposits/withdrawals on Polymarket move
+            # available_cash without restarting the process. Still bounded by MAX_BASKET_NOTIONAL and
+            # ARB_BASKET_NOTIONAL_FRACTION_OF_EQUITY vs bankroll.
+            base_from_rules = self._effective_base_max_basket_notional()
+            base_max = self._clamp_basket_notional_to_available_cash(base_from_rules)
+            if self._config.arb_cap_scan_notional_to_available_cash and base_from_rules > base_max + 1.0:
+                now_mono = time.monotonic()
+                if now_mono - self._last_basket_cash_limit_log_mono >= 300.0:
+                    self._last_basket_cash_limit_log_mono = now_mono
+                    logger.info(
+                        "arb_engine.basket_notional_cash_limited",
+                        unclamped_from_rules=round(base_from_rules, 4),
+                        after_cash_clamp=round(base_max, 4),
+                        available_cash=round(float(self._exchange.available_cash), 4),
+                    )
             bankroll_sz = self._equity_bankroll_for_sizing()
             cash_cap = self._spendable_cash_ceiling_for_baskets()
             diagnostics = self._scanner.cycle_diagnostics(
@@ -440,6 +454,7 @@ class ArbEngine:
                 "executed": executed,
                 "effective_max_basket_notional": round(cycle_basket_cap, 4),
                 "base_max_basket_notional": round(base_max, 4),
+                "basket_notional_before_cash_clamp": round(base_from_rules, 4),
                 "equity_bankroll_for_sizing": round(bankroll_sz, 4),
                 "available_cash": round(float(self._exchange.available_cash), 4),
                 "available_cash_ceiling_for_baskets": (

@@ -243,6 +243,19 @@ class ArbEngine:
         floor_usd = max(0.0, float(self._config.arb_basket_notional_min_usd))
         return max(floor_usd, scaled)
 
+    def _spendable_cash_ceiling_for_baskets(self) -> float | None:
+        """Max basket notional implied by free USDC; None when cash clamp is disabled."""
+        if not self._config.arb_cap_scan_notional_to_available_cash:
+            return None
+        buf = max(0.0, float(self._config.arb_available_cash_sizing_buffer_usd))
+        return max(0.0, float(self._exchange.available_cash) - buf)
+
+    def _clamp_basket_notional_to_available_cash(self, notional: float) -> float:
+        cap = self._spendable_cash_ceiling_for_baskets()
+        if cap is None:
+            return float(notional)
+        return min(float(notional), cap)
+
     async def shutdown(self) -> None:
         self._stop.set()
         await self._universe.close()
@@ -321,7 +334,9 @@ class ArbEngine:
             auto_settled = await self._auto_settle_resolved_events_locked()
             complete_set_unwound = await self._maybe_unwind_complete_set_baskets()
             base_max = self._effective_base_max_basket_notional()
+            base_max = self._clamp_basket_notional_to_available_cash(base_max)
             bankroll_sz = self._equity_bankroll_for_sizing()
+            cash_cap = self._spendable_cash_ceiling_for_baskets()
             diagnostics = self._scanner.cycle_diagnostics(
                 events, real_books, max_basket_notional=base_max
             )
@@ -335,6 +350,7 @@ class ArbEngine:
                     if abs_cap > 1e-9:
                         scaled = min(scaled, abs_cap)
                     cycle_basket_cap = max(base_max, scaled)
+                    cycle_basket_cap = self._clamp_basket_notional_to_available_cash(cycle_basket_cap)
                     opportunities = self._scanner.scan(
                         events, real_books, max_basket_notional=cycle_basket_cap
                     )
@@ -342,6 +358,7 @@ class ArbEngine:
                     opportunities = probe
             else:
                 opportunities = self._scanner.scan(events, real_books, max_basket_notional=base_max)
+                cycle_basket_cap = base_max
             self._opportunities = opportunities
             executed = 0
 
@@ -424,6 +441,13 @@ class ArbEngine:
                 "effective_max_basket_notional": round(cycle_basket_cap, 4),
                 "base_max_basket_notional": round(base_max, 4),
                 "equity_bankroll_for_sizing": round(bankroll_sz, 4),
+                "available_cash": round(float(self._exchange.available_cash), 4),
+                "available_cash_ceiling_for_baskets": (
+                    None if cash_cap is None else round(float(cash_cap), 4)
+                ),
+                "cap_scan_notional_to_available_cash": bool(
+                    self._config.arb_cap_scan_notional_to_available_cash
+                ),
                 "strategy_mode": str(self._config.arb_strategy_mode),
                 "adaptive_event_target": int(self._adaptive_event_target),
                 "basket_notional_fraction_of_equity": float(

@@ -162,6 +162,17 @@ class Settings(BaseSettings):
         default=5.0,
         alias="ARB_BASKET_NOTIONAL_MIN_USD",
     )
+    # When true, each cycle's scanner + risk basket cap is min(computed_cap, available_cash - buffer).
+    # Prevents sizing from max(equity, ...) alone while spendable USDC is lower (common with open positions).
+    arb_cap_scan_notional_to_available_cash: bool = Field(
+        default=True,
+        alias="ARB_CAP_SCAN_NOTIONAL_TO_AVAILABLE_CASH",
+    )
+    arb_available_cash_sizing_buffer_usd: float = Field(
+        default=0.0,
+        alias="ARB_AVAILABLE_CASH_SIZING_BUFFER_USD",
+        description="Subtracted from available_cash before clamping basket notional (small fee headroom).",
+    )
     max_total_open_baskets: int = Field(
         default=4, alias="MAX_TOTAL_OPEN_BASKETS"
     )

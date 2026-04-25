@@ -42,6 +42,8 @@ _SHARED_LIVE: dict[str, str] = {
     "ARB_CYCLE_ERROR_BACKOFF_SECONDS": "8",
     # Single bot: deploy full nominal bankroll (fraction × equity, capped below).
     "MAX_BASKET_NOTIONAL": "200",
+    # Keep scanner/risk caps aligned with spendable CLOB USDC (see engine second sync after unwind).
+    "ARB_CAP_SCAN_NOTIONAL_TO_AVAILABLE_CASH": "true",
     "ARB_BASKET_NOTIONAL_FRACTION_OF_EQUITY": "0.38",
     "ARB_BASKET_NOTIONAL_MIN_USD": "12",
     "ARB_MAX_BASKET_NOTIONAL_QUALIFIED_MULTIPLIER": "1.35",
@@ -53,7 +55,7 @@ _SHARED_LIVE: dict[str, str] = {
     "ARB_ADAPTIVE_EVENT_BUDGET_ENABLED": "true",
     "ARB_ADAPTIVE_EVENT_BUDGET_MIN": "360",
     "ARB_ADAPTIVE_EVENT_BUDGET_MAX": "1400",
-    "ARB_ADAPTIVE_EVENT_TARGET_CYCLE_SECONDS": "85",
+    "ARB_ADAPTIVE_EVENT_TARGET_CYCLE_SECONDS": "55",
     # Keep live bot resilient during thin/fast books: do not hard-halt after a few failed baskets.
     "ARB_CONSECUTIVE_EXECUTION_FAILURES_HALT": "0",
     "ARB_HALT_EXECUTION_IF_SYNTHETIC_BOOKS_GE": "0",

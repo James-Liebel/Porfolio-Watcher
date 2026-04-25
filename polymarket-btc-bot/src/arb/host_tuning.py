@@ -28,14 +28,15 @@ def structural_bot_env_from_cpu(mode: Mode = "live") -> dict[str, str]:
 
     # Parallel get_order_book HTTP calls per cycle (I/O bound).
     conc = int(min(72, max(14, round(n * 4.0 * scale))))
-    # Events that receive CLOB books each cycle (single bot: scan wider than dual-agent defaults).
-    tracked = int(min(1400, max(420, round(380 + n * 62 * scale))))
+    # Events that receive CLOB books each cycle.
+    # Keep this moderate so live cycles complete consistently on commodity hosts.
+    tracked = int(min(850, max(220, round(210 + n * 38 * scale))))
     # Execution slots (still bounded by cash / risk).
     max_opp = int(min(18, max(7, n // 2 + 6)))
     max_open = int(min(14, max(6, n // 2 + 4)))
     per_strat = int(min(8, max(4, n // 3 + 3)))
-    # Slightly shorter poll on fast machines; floor keeps API load reasonable.
-    poll = int(max(9, min(17, 21 - n // 3)))
+    # Shorter poll for faster reaction once a cycle completes.
+    poll = int(max(5, min(11, 13 - n // 4)))
 
     # Gamma: more pages when CPU can handle the merge/sort work (still one asyncio client).
     ev_pages = int(min(45, max(24, round(20 + n * 1.8))))

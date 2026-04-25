@@ -334,6 +334,9 @@ class ArbEngine:
 
             auto_settled = await self._auto_settle_resolved_events_locked()
             complete_set_unwound = await self._maybe_unwind_complete_set_baskets()
+            # First sync ran before books/settle; refresh again so available_cash matches Polymarket after
+            # unwind/settle (and long book fetches) before sizing — avoids scan caps above spendable USDC.
+            await self._maybe_sync_clob_collateral()
             # Recomputed every cycle (after CLOB sync above): deposits/withdrawals on Polymarket move
             # available_cash without restarting the process. Still bounded by MAX_BASKET_NOTIONAL and
             # ARB_BASKET_NOTIONAL_FRACTION_OF_EQUITY vs bankroll.

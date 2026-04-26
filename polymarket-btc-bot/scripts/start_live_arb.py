@@ -142,6 +142,59 @@ def _run_gate(script: list[str], label: str) -> bool:
     return True
 
 
+def _pid_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", f"Get-Process -Id {pid} -ErrorAction SilentlyContinue"],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+        )
+        return bool((out.stdout or "").strip())
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _acquire_launcher_lock(lock_path: Path) -> bool:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = f"{os.getpid()}\n{time.time()}\n"
+    for _ in range(2):
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            return True
+        except FileExistsError:
+            try:
+                raw = lock_path.read_text(encoding="utf-8").splitlines()
+                holder_pid = int(raw[0].strip()) if raw else -1
+            except Exception:
+                holder_pid = -1
+            if holder_pid > 0 and _pid_running(holder_pid):
+                print(
+                    f"[BLOCKED] Another start_live_arb launcher is already running (pid={holder_pid}). "
+                    "Stop it first or wait for it to exit."
+                )
+                return False
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                return False
+    return False
+
+
+def _release_launcher_lock(lock_path: Path) -> None:
+    try:
+        lock_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Start one live structural-arb bot.")
     parser.add_argument(
@@ -163,6 +216,9 @@ def main() -> int:
     print("=" * 60)
     print("  Polymarket — LIVE structural arbitrage (single bot)")
     print("=" * 60)
+    lock_path = ROOT / "data" / "live_launcher.lock"
+    if not _acquire_launcher_lock(lock_path):
+        return 2
 
     bankroll = float(args.bankroll)
     if bankroll <= 0:
@@ -229,6 +285,18 @@ def main() -> int:
     env = os.environ.copy()
     env.update(_SHARED_LIVE)
     host_tuning = structural_bot_env_from_cpu("live")
+    # Stability caps: keep cycle runtime bounded even on higher-core hosts.
+    # Faster, reliable cycles beat wider scans that stall execution for minutes.
+    try:
+        host_tuning["MAX_TRACKED_EVENTS"] = str(min(int(host_tuning.get("MAX_TRACKED_EVENTS", "320")), 320))
+    except Exception:
+        host_tuning["MAX_TRACKED_EVENTS"] = "320"
+    try:
+        host_tuning["CLOB_BOOK_FETCH_CONCURRENCY"] = str(
+            min(int(host_tuning.get("CLOB_BOOK_FETCH_CONCURRENCY", "28")), 28)
+        )
+    except Exception:
+        host_tuning["CLOB_BOOK_FETCH_CONCURRENCY"] = "28"
     env.update(host_tuning)
     env.update(
         {
@@ -274,6 +342,7 @@ def main() -> int:
                 proc.wait(timeout=8)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        _release_launcher_lock(lock_path)
     return 0
 
 

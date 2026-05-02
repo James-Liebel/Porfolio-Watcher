@@ -360,22 +360,39 @@ class ArbEngine:
             mult = max(1.0, float(self._config.arb_max_basket_notional_qualified_multiplier))
             abs_cap = float(self._config.arb_max_basket_notional_qualified_abs_max)
             cycle_basket_cap = base_max
-            if mult > 1.0 + 1e-9:
-                probe = self._scanner.scan(events, real_books, max_basket_notional=base_max)
-                if probe:
-                    scaled = base_max * mult
-                    if abs_cap > 1e-9:
-                        scaled = min(scaled, abs_cap)
-                    cycle_basket_cap = max(base_max, scaled)
-                    cycle_basket_cap = self._clamp_basket_notional_to_available_cash(cycle_basket_cap)
-                    opportunities = self._scanner.scan(
-                        events, real_books, max_basket_notional=cycle_basket_cap
-                    )
-                else:
-                    opportunities = probe
-            else:
-                opportunities = self._scanner.scan(events, real_books, max_basket_notional=base_max)
-                cycle_basket_cap = base_max
+            opportunities = self._scanner.scan(events, real_books, max_basket_notional=base_max)
+            floor_rescan_used = False
+            floor_rescan_attempts = 0
+
+            # If we found opportunities at base cap, optional "qualified multiplier" can expand size.
+            if opportunities and mult > 1.0 + 1e-9:
+                scaled = base_max * mult
+                if abs_cap > 1e-9:
+                    scaled = min(scaled, abs_cap)
+                cycle_basket_cap = max(base_max, scaled)
+                cycle_basket_cap = self._clamp_basket_notional_to_available_cash(cycle_basket_cap)
+                opportunities = self._scanner.scan(events, real_books, max_basket_notional=cycle_basket_cap)
+            # If nothing cleared floors at base cap, try smaller caps where depth/fees can improve edge.
+            elif not opportunities:
+                floor_usd = max(0.0, float(self._config.arb_basket_notional_min_usd))
+                for frac in (0.75, 0.55, 0.40, 0.30):
+                    trial = self._clamp_basket_notional_to_available_cash(max(floor_usd, base_max * frac))
+                    if trial >= cycle_basket_cap - 1e-9:
+                        continue
+                    floor_rescan_attempts += 1
+                    trial_opp = self._scanner.scan(events, real_books, max_basket_notional=trial)
+                    if trial_opp:
+                        cycle_basket_cap = trial
+                        opportunities = trial_opp
+                        floor_rescan_used = True
+                        logger.info(
+                            "arb_engine.floor_rescan_recovered_opportunities",
+                            base_cap=round(base_max, 4),
+                            recovered_cap=round(cycle_basket_cap, 4),
+                            attempts=floor_rescan_attempts,
+                            recovered=len(opportunities),
+                        )
+                        break
             self._opportunities = opportunities
             executed = 0
 
@@ -458,6 +475,8 @@ class ArbEngine:
                 "effective_max_basket_notional": round(cycle_basket_cap, 4),
                 "base_max_basket_notional": round(base_max, 4),
                 "basket_notional_before_cash_clamp": round(base_from_rules, 4),
+                "floor_rescan_used": floor_rescan_used,
+                "floor_rescan_attempts": floor_rescan_attempts,
                 "equity_bankroll_for_sizing": round(bankroll_sz, 4),
                 "available_cash": round(float(self._exchange.available_cash), 4),
                 "available_cash_ceiling_for_baskets": (
@@ -566,7 +585,12 @@ class ArbEngine:
                 basket.status = "CLOSED"
                 basket.closed_at = utc_now()
             else:
-                for leg in opportunity.legs:
+                # Preflight all complete-set BUY legs against latest in-memory books before first order.
+                # This avoids entering one/few legs when another leg has already lost executable depth.
+                self._preflight_complete_set_legs(opportunity)
+                # Execute thinnest leg first to fail early (before opening exposure on easier legs).
+                legs_ordered = self._order_complete_set_legs_for_execution(opportunity)
+                for leg in legs_ordered:
                     order = await self._place_leg(
                         basket_id=basket.basket_id,
                         opportunity=opportunity,
@@ -613,6 +637,35 @@ class ArbEngine:
             logger.error("arb_engine.execution_failed", event_id=opportunity.event_id, error=str(exc))
             self._risk.record_execution_failure()
             return None
+
+    def _preflight_complete_set_legs(self, opportunity: ArbOpportunity) -> None:
+        if opportunity.requires_conversion:
+            return
+        for leg in opportunity.legs:
+            if leg.action != "BUY":
+                continue
+            book = self._exchange.book_for_token(leg.token_id)
+            if book is None:
+                raise RuntimeError(f"execution preflight missing book for {leg.token_id}")
+            avail = float(book.available_to_buy(float(leg.price)))
+            if avail + 1e-9 < float(leg.size):
+                raise RuntimeError(
+                    f"execution preflight depth short for {leg.token_id} "
+                    f"(need {leg.size:.6f}, avail {avail:.6f})"
+                )
+
+    def _order_complete_set_legs_for_execution(self, opportunity: ArbOpportunity) -> list[OpportunityLeg]:
+        if opportunity.requires_conversion:
+            return list(opportunity.legs)
+        # Least available depth first: fail fast before opening larger one-sided inventory.
+        legs = list(opportunity.legs)
+
+        def _key(leg: OpportunityLeg) -> tuple[float, float]:
+            book = self._exchange.book_for_token(leg.token_id)
+            avail = float(book.available_to_buy(float(leg.price))) if book is not None else 0.0
+            return (avail, float(leg.price))
+
+        return sorted(legs, key=_key)
 
     async def _execute_neg_risk_basket(self, opportunity: ArbOpportunity, basket: BasketRecord) -> None:
         if not self._config.neg_risk_live_onchain_available():

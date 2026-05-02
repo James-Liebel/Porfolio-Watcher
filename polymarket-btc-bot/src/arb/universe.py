@@ -278,6 +278,8 @@ class GammaUniverseService:
             status = str(meta.get("status") or rows[0].get("status") or "active").lower()
             if status in {"resolved", "closed", "finalized"}:
                 continue
+            if not self._config.event_title_is_allowed(title):
+                continue
             category_str = str(meta.get("category") or rows[0].get("category") or "")
             if not self._config.category_is_allowed(category_str):
                 continue

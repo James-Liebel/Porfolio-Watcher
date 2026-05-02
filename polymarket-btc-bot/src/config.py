@@ -348,6 +348,8 @@ class Settings(BaseSettings):
     replay_output_dir: str = Field(default="data/replays", alias="REPLAY_OUTPUT_DIR")
     category_allowlist: str = Field(default="", alias="CATEGORY_ALLOWLIST")
     category_blocklist: str = Field(default="", alias="CATEGORY_BLOCKLIST")
+    # Extra universe guard: comma-separated title substrings to exclude regardless of category.
+    event_title_blocklist: str = Field(default="", alias="EVENT_TITLE_BLOCKLIST")
 
     # Prefer neg-risk-eligible events when ranking the universe (liquidity tie-breaker).
     universe_prefer_neg_risk: bool = Field(default=True, alias="UNIVERSE_PREFER_NEG_RISK")
@@ -597,6 +599,13 @@ class Settings(BaseSettings):
             return False
         allowlist = [s.strip().lower() for s in self.category_allowlist.split(",") if s.strip()]
         if allowlist and not any(allowed in cat for allowed in allowlist):
+            return False
+        return True
+
+    def event_title_is_allowed(self, title: str) -> bool:
+        t = (title or "").strip().lower()
+        blocklist = [s.strip().lower() for s in self.event_title_blocklist.split(",") if s.strip()]
+        if any(blocked in t for blocked in blocklist):
             return False
         return True
 

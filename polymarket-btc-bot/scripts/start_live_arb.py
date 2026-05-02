@@ -37,6 +37,8 @@ _SHARED_LIVE: dict[str, str] = {
     "PAPER_TRADE": "false",
     "ARB_LIVE_EXECUTION": "true",
     "ALLOW_TAKER_EXECUTION": "true",
+    # Exclude geopolitical/territory-style markets from live arb universe.
+    "EVENT_TITLE_BLOCKLIST": "territory,territories,border,annex,sovereignty,gaza,west bank,crimea,taiwan",
     "PAPER_SPREAD_PENALTY_BPS": "0",
     "PAPER_TAKER_FEE_BPS": "50",
     "ARB_CYCLE_ERROR_BACKOFF_SECONDS": "8",
@@ -230,20 +232,24 @@ def main() -> int:
             print(f"[*] INITIAL_BANKROLL from .env = ${bankroll:.2f}")
         except Exception as exc:
             print(f"[X] Could not read Settings from .env: {exc}")
+            _release_launcher_lock(lock_path)
             return 1
     else:
         print(f"[*] Using --bankroll = ${bankroll:.2f}")
 
     print("\n[1/3] Checking environment…")
     if not _run_gate(["scripts/check_env.py"], "check_env"):
+        _release_launcher_lock(lock_path)
         return 1
 
     print("\n[2/3] Verifying wallet key matches address…")
     if not _run_gate(["scripts/verify_wallet_key_matches_env.py"], "verify_wallet_key_matches_env"):
+        _release_launcher_lock(lock_path)
         return 1
 
     print("\n[3/3] Checking live API connections…")
     if not _run_gate(["scripts/check_live_connections.py"], "check_live_connections"):
+        _release_launcher_lock(lock_path)
         return 1
 
     port = int(args.port)
@@ -264,6 +270,7 @@ def main() -> int:
         answer = input("\nType CONFIRM to start live, or anything else to cancel: ").strip()
         if answer != "CONFIRM":
             print("Cancelled.")
+            _release_launcher_lock(lock_path)
             return 0
 
     # Ensure a single runtime: kill old `python -m src`, then listeners (restart script also cleans).

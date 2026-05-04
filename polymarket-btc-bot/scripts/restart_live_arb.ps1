@@ -32,14 +32,16 @@ foreach ($port in $ports) {
 Start-Sleep -Seconds 2
 
 $botRoot = Split-Path -Parent $PSScriptRoot
-foreach ($f in @(
-        (Join-Path $botRoot "data\live_launcher.lock"),
-        (Join-Path $botRoot "data\live_arb.db.runtime.lock")
-    )) {
+$dataDir = Join-Path $botRoot "data"
+foreach ($f in @((Join-Path $dataDir "live_launcher.lock"))) {
     if (Test-Path -LiteralPath $f) {
         Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
     }
 }
+Get-ChildItem -Path $dataDir -Filter "*.runtime.lock" -File -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+    }
 Set-Location $botRoot
 
 $py = Join-Path $botRoot ".venv\Scripts\python.exe"

@@ -32,13 +32,29 @@ _SHARED_PAPER: dict[str, str] = {
     "CONTROL_API_TOKEN": "",
     "INITIAL_BANKROLL": "500",
     "PAPER_TAKER_FEE_BPS": "50",
+    # Must be >0 — models the half-spread crossing cost that the live taker pays.
+    # 0 inflates scanner edge and produces paper PnL that won't survive real execution.
     "PAPER_SPREAD_PENALTY_BPS": "15",
     "MAX_BASKET_NOTIONAL": "120",
-    "ARB_BASKET_NOTIONAL_FRACTION_OF_EQUITY": "0.34",
+    # Fraction of bankroll per basket so sizing scales with equity automatically.
+    "ARB_BASKET_NOTIONAL_FRACTION_OF_EQUITY": "0.28",
     "ARB_BASKET_NOTIONAL_MIN_USD": "8",
-    "ARB_MAX_BASKET_NOTIONAL_QUALIFIED_MULTIPLIER": "1.2",
-    "MAX_EVENT_EXPOSURE_PCT": "0.48",
+    # Expand basket when a confirmed edge exists at base cap.
+    "ARB_MAX_BASKET_NOTIONAL_QUALIFIED_MULTIPLIER": "1.3",
+    # Fee headroom so dust-level cash never rejects a final leg.
+    "ARB_AVAILABLE_CASH_SIZING_BUFFER_USD": "1.50",
+    "MAX_EVENT_EXPOSURE_PCT": "0.35",
+    # Always scan both strategies: complete_set works with any wallet + books;
+    # neg_risk adds larger edges when priced. Restricting to neg_risk alone produces
+    # persistent opportunities=0 whenever neg_risk books are thin (very common).
     "ARB_STRATEGY_MODE": "both",
+    # 10-day window: ~5-10× more events vs 24h, with far more pricing inefficiency.
+    # Near-term markets are the most efficient — widening the window is the biggest
+    # single lever for finding opportunities.
+    "UNIVERSE_MAX_HOURS_TO_RESOLUTION": "240",
+    "UNIVERSE_PREFER_NEG_RISK": "true",
+    "UNIVERSE_PREFER_SHORTER_RESOLUTION": "true",
+    "MIN_EVENT_LIQUIDITY": "1000",
     "ARB_ADAPTIVE_EVENT_BUDGET_ENABLED": "true",
     "ARB_ADAPTIVE_EVENT_BUDGET_MIN": "260",
     "ARB_ADAPTIVE_EVENT_BUDGET_MAX": "1000",
@@ -49,7 +65,6 @@ _SHARED_PAPER: dict[str, str] = {
     "ARB_MIN_EXPECTED_PROFIT_USD": "0.1",
     "ENABLE_DIRECTIONAL_OVERLAY": "false",
     "ENABLE_TRADER_FOLLOW": "false",
-    "UNIVERSE_PREFER_NEG_RISK": "true",
 }
 
 

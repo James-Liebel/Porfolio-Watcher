@@ -110,6 +110,7 @@ async def main() -> None:
             "arb_bot.started",
             paper_trade=config.paper_trade,
             arb_live_execution=config.arb_live_execution,
+            arb_strategy_mode=config.arb_strategy_mode,
             paper_taker_fee_bps=config.paper_taker_fee_bps,
             paper_spread_penalty_bps=config.paper_spread_penalty_bps,
             gamma_base_url=config.gamma_base_url,
@@ -118,6 +119,7 @@ async def main() -> None:
             max_tracked_events=config.max_tracked_events,
             sqlite_path=db_path,
             control_port=config.control_api_port,
+            initial_bankroll=config.initial_bankroll,
         )
         mode = (config.arb_strategy_mode or "").strip().lower()
         if (

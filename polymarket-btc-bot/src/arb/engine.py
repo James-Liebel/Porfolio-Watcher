@@ -96,6 +96,9 @@ class ArbEngine:
         self._complete_set_hold_log_mono: dict[str, float] = {}
         self._last_basket_cash_limit_log_mono: float = 0.0
         self._adaptive_event_target = int(config.max_tracked_events)
+        # Consecutive cycle counter for sustained-zero diagnostics warnings.
+        self._cycles_with_zero_neg_risk_priceable: int = 0
+        self._cycles_with_zero_cs_priceable: int = 0
 
     @property
     def risk(self) -> ArbRiskManager:
@@ -507,6 +510,7 @@ class ArbEngine:
             )
             if self._config.arb_log_cycle_diagnostics:
                 logger.info("arb_engine.cycle_diagnostics", **diagnostics)
+            self._warn_on_sustained_zero_diagnostics(diagnostics)
             await self._append_paper_equity_snapshot()
             self._current_cycle_step = "idle"
             self._current_cycle_pct = 0.0
@@ -543,6 +547,61 @@ class ArbEngine:
             new_target = int(min(hi, round(new_target * 1.12)))
         self._adaptive_event_target = max(lo, min(hi, new_target))
 
+    def _warn_on_sustained_zero_diagnostics(self, diagnostics: dict[str, Any]) -> None:
+        """Warn when strategy_mode includes a sleeve that has never priced any events for many cycles.
+
+        Catches the common mis-config where ARB_STRATEGY_MODE=neg_risk but neg_risk books are thin
+        (so opportunities=0 forever), or complete_set is the only realistic scanner path but is
+        excluded by mode. Emits at most once per 10-cycle run of zeros to avoid log spam.
+        """
+        mode = str(self._config.arb_strategy_mode or "both").strip().lower()
+        threshold = 10  # warn after this many consecutive zero-priceable cycles
+
+        nr_priceable = int(diagnostics.get("neg_risk_priceable_events") or 0)
+        cs_priceable = int(diagnostics.get("complete_set_priceable_events") or 0)
+        nr_tagged = int(diagnostics.get("neg_risk_tagged_events") or 0)
+        events_in_universe = int(diagnostics.get("events_in_universe") or 0)
+
+        if mode in {"both", "neg_risk"}:
+            if nr_priceable == 0 and nr_tagged > 0:
+                self._cycles_with_zero_neg_risk_priceable += 1
+            else:
+                self._cycles_with_zero_neg_risk_priceable = 0
+            if self._cycles_with_zero_neg_risk_priceable == threshold:
+                logger.warning(
+                    "arb_engine.sustained_zero_neg_risk_priceable",
+                    cycles=threshold,
+                    neg_risk_tagged_events=nr_tagged,
+                    events_in_universe=events_in_universe,
+                    arb_strategy_mode=mode,
+                    hint=(
+                        "neg_risk_tagged_events > 0 but books are too thin / spread too wide to price. "
+                        "Consider ARB_STRATEGY_MODE=both so complete_set scanning is not skipped, or "
+                        "widen MAX_ARB_LEG_SPREAD_BPS / lower MIN_NEG_RISK_EDGE_BPS."
+                    ),
+                )
+        else:
+            self._cycles_with_zero_neg_risk_priceable = 0
+
+        if mode in {"both", "complete_set"}:
+            if cs_priceable == 0 and events_in_universe > 0:
+                self._cycles_with_zero_cs_priceable += 1
+            else:
+                self._cycles_with_zero_cs_priceable = 0
+            if self._cycles_with_zero_cs_priceable == threshold:
+                logger.warning(
+                    "arb_engine.sustained_zero_complete_set_priceable",
+                    cycles=threshold,
+                    events_in_universe=events_in_universe,
+                    arb_strategy_mode=mode,
+                    hint=(
+                        "No events could be priced as complete sets. Common causes: all events have "
+                        "fewer than MIN_OUTCOMES_PER_EVENT legs with real CLOB books, or "
+                        "UNIVERSE_MAX_HOURS_TO_RESOLUTION is too narrow (try 168–240 h)."
+                    ),
+                )
+        else:
+            self._cycles_with_zero_cs_priceable = 0
 
     async def _append_paper_equity_snapshot(self) -> None:
         if not self._config.paper_trade or not self._config.paper_equity_snapshot_log:

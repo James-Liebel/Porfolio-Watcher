@@ -19,6 +19,7 @@ from py_clob_client.order_builder.constants import BUY, SELL
 
 from ..config import Settings
 from ..polymarket.clob_factory import build_live_clob_client
+from .clob_rounding import clob_fok_buy_price_and_size, clob_fok_sell_price_and_size
 from .exchange import PaperExchange
 from .models import ArbEvent, FillRecord, OrderIntent, OrderRecord, PositionRecord, utc_now
 from .neg_risk_converter import (
@@ -386,10 +387,37 @@ class LiveClobExchange(PaperExchange):
             self._orders[order.order_id] = order
             return replace(order), []
 
+        raw_price = float(intent.price)
+        raw_size = float(intent.size)
+        if intent.side == "BUY":
+            clob_price, clob_size = clob_fok_buy_price_and_size(raw_price, raw_size)
+        else:
+            clob_price, clob_size = clob_fok_sell_price_and_size(raw_price, raw_size)
+
+        if clob_price <= 0:
+            order.status = "rejected"
+            order.reason = f"price rounds to zero ({raw_price})"
+            self._orders[order.order_id] = order
+            return replace(order), []
+
+        maker_usdc = round(clob_price * clob_size, 2)
+        if maker_usdc <= 0 or clob_size <= 0:
+            order.status = "rejected"
+            order.reason = f"order value < $0.01 (price={clob_price}, size={raw_size})"
+            self._orders[order.order_id] = order
+            return replace(order), []
+
+        # Ledger + risk checks must use the amounts we actually post (`clob_*`), not raw intent.
+        # Using intent.size previously made the basket look filled while the chain only received
+        # clob_size — breaking multi-leg complete sets and cash accounting.
+        order.price = float(clob_price)
+        order.size = float(clob_size)
+        order.metadata["clob_rounded_from"] = {"price": raw_price, "size": raw_size}
+
         if intent.side == "BUY":
             estimated_cost = self._reserve_amount_for_order(
-                price=intent.price,
-                size=intent.size,
+                price=clob_price,
+                size=clob_size,
                 side=intent.side,
                 fees_enabled=intent.fees_enabled,
                 maker_or_taker=intent.maker_or_taker,
@@ -400,7 +428,7 @@ class LiveClobExchange(PaperExchange):
                 self._orders[order.order_id] = order
                 return replace(order), []
         else:
-            if self._available_position(intent.token_id) + 1e-12 < intent.size:
+            if self._available_position(intent.token_id) + 1e-12 < clob_size:
                 order.status = "rejected"
                 order.reason = "insufficient inventory"
                 self._orders[order.order_id] = order
@@ -408,46 +436,6 @@ class LiveClobExchange(PaperExchange):
 
         side_const = BUY if intent.side == "BUY" else SELL
         ot = OrderType.FOK if intent.order_type == "fok" else OrderType.FAK
-
-        import math as _math
-
-        # Polymarket CLOB enforces (per exchange contract validation):
-        #   - price:  max 2 decimal places (tick = $0.01)
-        #   - maker_amount (USDC spend): max 2 decimal places → price × size must be
-        #     a multiple of $0.01
-        #   - taker_amount (outcome tokens): max 4 decimal places
-        #
-        # For price p (in 2dp) and size s (in 2dp), p×s has at most 4dp.
-        # We need p×s to land on exactly 2dp.  This requires s to be a multiple of
-        # 0.01 × (100 / gcd(price_cents, 100)).
-        raw_price = float(intent.price)
-        raw_size = float(intent.size)
-
-        # BUY: ceil price so we don't miss the ask; SELL: floor so we don't undershoot bid
-        if intent.side == "BUY":
-            clob_price = _math.ceil(raw_price * 100) / 100
-        else:
-            clob_price = _math.floor(raw_price * 100) / 100
-
-        if clob_price <= 0:
-            order.status = "rejected"
-            order.reason = f"price rounds to zero ({raw_price})"
-            self._orders[order.order_id] = order
-            return replace(order), []
-
-        # Compute minimum size step so that clob_price × size is always a $0.01 multiple.
-        # step = 0.01 × ⌈100 / gcd(price_cents, 100)⌉
-        price_cents = round(clob_price * 100)  # integer 1..99
-        step = 0.01 * (100 // _math.gcd(price_cents, 100))
-        clob_size = _math.floor(raw_size / step) * step
-        clob_size = round(clob_size, 2)
-
-        maker_usdc = round(clob_price * clob_size, 2)
-        if maker_usdc <= 0 or clob_size <= 0:
-            order.status = "rejected"
-            order.reason = f"order value < $0.01 (price={clob_price}, size={raw_size})"
-            self._orders[order.order_id] = order
-            return replace(order), []
 
         # Pass neg_risk and tick_size explicitly so the SDK routes to the correct exchange
         # contract and validates price precision without an extra network round-trip.
@@ -512,8 +500,8 @@ class LiveClobExchange(PaperExchange):
 
         oid = str(resp.get("orderID") or resp.get("order_id") or order_id)
         order.order_id = oid
-        order.filled_size = float(intent.size)
-        order.average_price = float(intent.price)
+        order.filled_size = float(clob_size)
+        order.average_price = float(clob_price)
         order.status = "filled"
         order.updated_at = datetime.now(timezone.utc)
         order.metadata["clob_response"] = {k: resp[k] for k in ("status", "orderID", "transactionsHashes", "tradeIDs") if k in resp}
@@ -525,8 +513,8 @@ class LiveClobExchange(PaperExchange):
             market_id=intent.market_id,
             event_id=self._token_meta[intent.token_id]["event_id"],
             side=intent.side,
-            price=float(intent.price),
-            size=float(intent.size),
+            price=float(clob_price),
+            size=float(clob_size),
             fee_paid=0.0,
             rebate_earned=0.0,
             timestamp=utc_now(),

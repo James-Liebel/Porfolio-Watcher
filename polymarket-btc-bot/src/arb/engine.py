@@ -12,6 +12,7 @@ import structlog
 
 from ..config import Settings
 from ..storage.db import Database
+from .clob_rounding import min_clob_fok_buy_shares_across_prices
 from .exchange import PaperExchange
 from .fees import taker_fee_on_notional
 from .market_data import ClobMarketDataService
@@ -564,7 +565,30 @@ class ArbEngine:
 
         await asyncio.to_thread(_write)
 
+    def _align_complete_set_buy_sizes_for_clob(self, opportunity: ArbOpportunity) -> None:
+        """Shrink all YES BUY legs to the same size valid for FOK on every leg (price-dependent step)."""
+        buy_legs = [leg for leg in opportunity.legs if leg.action == "BUY"]
+        if not buy_legs:
+            return
+        raw = float(buy_legs[0].size)
+        aligned = min_clob_fok_buy_shares_across_prices(raw, [float(leg.price) for leg in buy_legs])
+        if aligned <= 1e-12:
+            raise RuntimeError(
+                "complete-set size is not postable on Polymarket CLOB after price×size tick rounding"
+            )
+        if aligned + 1e-9 < raw:
+            logger.info(
+                "arb_engine.complete_set_clob_size_align",
+                event_id=opportunity.event_id,
+                raw_size=round(raw, 6),
+                aligned_size=aligned,
+            )
+        for leg in buy_legs:
+            leg.size = float(aligned)
+
     async def _execute_opportunity(self, opportunity: ArbOpportunity) -> BasketRecord | None:
+        if not opportunity.requires_conversion:
+            self._align_complete_set_buy_sizes_for_clob(opportunity)
         basket = BasketRecord(
             basket_id=f"basket-{uuid.uuid4().hex[:10]}",
             opportunity_id=opportunity.opportunity_id,

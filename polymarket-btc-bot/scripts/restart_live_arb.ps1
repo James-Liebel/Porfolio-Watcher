@@ -7,10 +7,9 @@ $ErrorActionPreference = "SilentlyContinue"
 Get-CimInstance Win32_Process |
     Where-Object {
         $_.Name -eq 'python.exe' -and
-        $_.CommandLine -like '*polymarket-btc-bot*' -and (
-            $_.CommandLine -like '* -m src*' -or
-            $_.CommandLine -like '*start_live_arb*' -or
-            $_.CommandLine -like '*start_paper_arb*'
+        ($cl = $_.CommandLine) -and
+        ($cl -match 'polymarket-btc-bot') -and (
+            $cl -match '-m src|start_live_arb|start_paper_arb|check_env|verify_wallet|check_live_connections'
         )
     } |
     ForEach-Object {

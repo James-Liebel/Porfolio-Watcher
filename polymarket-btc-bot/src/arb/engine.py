@@ -11,7 +11,7 @@ from ..config import Settings
 from ..storage.db import Database
 from .exchange import PaperExchange
 from .market_data import ClobMarketDataService
-from .models import ArbEvent, ArbOpportunity, BasketRecord, OrderIntent, TokenBook, utc_now
+from .models import ArbEvent, ArbOpportunity, BasketRecord, OpportunityLeg, OrderIntent, TokenBook, utc_now
 from .pricing import OpportunityScanner
 from .repository import ArbRepository
 from .risk import ArbRiskManager
@@ -226,7 +226,7 @@ class ArbEngine:
                 basket.status = "CLOSED"
                 basket.closed_at = utc_now()
             else:
-                for leg in opportunity.legs:
+                for leg in self._order_legs_by_fill_risk(opportunity.legs):
                     order = await self._place_leg(
                         basket_id=basket.basket_id,
                         opportunity=opportunity,
@@ -347,6 +347,26 @@ class ArbEngine:
             await self._repository.record_order(order)
             for fill in fills:
                 await self._repository.record_fill(fill)
+
+    def _order_legs_by_fill_risk(self, legs: list[OpportunityLeg]) -> list[OpportunityLeg]:
+        """Order legs so the most fragile (thinnest available depth) fills first.
+
+        Baskets are not atomic: legs are placed one at a time. If we buy the easy
+        legs first and a thin leg then fails its FOK, we are left holding a partial
+        basket that must be unwound at a loss (cross the spread + pay fees twice).
+        Placing the thinnest leg first lets a rejection abort the basket before any
+        capital is committed to the others. Paper fills are unaffected (all legs
+        match the same frozen snapshot); the benefit is live execution.
+        """
+        def available_depth(leg: OpportunityLeg) -> float:
+            book = self._last_books.get(leg.token_id)
+            if book is None:
+                return 0.0
+            if leg.action == "BUY":
+                return book.available_to_buy(leg.price)
+            return book.available_to_sell(leg.price)
+
+        return sorted(legs, key=available_depth)
 
     async def _place_leg(
         self,

@@ -89,6 +89,16 @@ class Settings(BaseSettings):
     min_neg_risk_edge_bps: float = Field(
         default=40.0, alias="MIN_NEG_RISK_EDGE_BPS"
     )
+    arb_slippage_buffer_bps: float = Field(
+        default=15.0,
+        alias="ARB_SLIPPAGE_BUFFER_BPS",
+        description=(
+            "Extra edge (bps) required on top of the per-strategy floor before an "
+            "opportunity is eligible. Cushions snapshot staleness (ARB_POLL_SECONDS), "
+            "your own market impact, and fee uncertainty between scan and live fill. "
+            "Effective requirement = min_*_edge_bps + this. Set 0 only for tests/replay."
+        ),
+    )
     max_event_exposure_pct: float = Field(
         default=0.10, alias="MAX_EVENT_EXPOSURE_PCT"
     )

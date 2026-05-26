@@ -193,6 +193,19 @@ class OpportunityScanner:
         return opportunities[: self._config.max_opportunities_per_cycle * 10]
 
     def _complete_set_opportunities(self, event: ArbEvent, books: dict[str, TokenBook]) -> list[ArbOpportunity]:
+        # Complete-set redemption pays exactly $1.00 per set only when the event's
+        # outcomes are mutually exclusive AND collectively exhaustive (exactly one
+        # leg resolves YES). On Polymarket that structure is guaranteed by
+        # negative-risk events. An arbitrary Gamma `eventId` is only a grouping and
+        # may bundle independent questions where zero or several legs resolve YES —
+        # there "sum(YES asks) < 1" is a basket of longs, not an arbitrage, and can
+        # lose the full stake. Augmented neg-risk events can gain outcomes after we
+        # buy, breaking exhaustiveness of the set, so they are excluded as well.
+        if not (event.neg_risk or event.enable_neg_risk):
+            return []
+        if event.neg_risk_augmented:
+            return []
+
         normalized_outcomes = [_normalize_outcome(market.outcome_name) for market in event.markets]
         if any(not outcome for outcome in normalized_outcomes):
             return []
@@ -232,7 +245,8 @@ class OpportunityScanner:
         payout = size * 1.0
         profit = payout - cash_out
         net_edge_bps = _edge_bps(profit, cash_out)
-        if net_edge_bps < self._config.min_complete_set_edge_bps or profit <= 0:
+        required_edge_bps = self._config.min_complete_set_edge_bps + self._config.arb_slippage_buffer_bps
+        if net_edge_bps < required_edge_bps or profit <= 0:
             return []
 
         legs = [
@@ -327,7 +341,8 @@ class OpportunityScanner:
                 continue
 
             net_edge_bps = _edge_bps(profit, buy_cost)
-            if net_edge_bps < self._config.min_neg_risk_edge_bps or profit <= 0:
+            required_edge_bps = self._config.min_neg_risk_edge_bps + self._config.arb_slippage_buffer_bps
+            if net_edge_bps < required_edge_bps or profit <= 0:
                 continue
 
             buy_leg = OpportunityLeg(

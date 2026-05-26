@@ -90,14 +90,19 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 
 **Complete-set (`strategy_type=complete_set`)**
 
+- **Requires negative-risk structure** — `neg_risk` or `enable_neg_risk` on the event, and **not** `neg_risk_augmented`. This is the precondition that makes the set redeem for exactly $1.00: the outcomes must be mutually exclusive **and** collectively exhaustive (exactly one resolves YES). A bare Gamma `eventId` is only a grouping and may bundle independent questions; buying every YES there is a basket of longs, not an arb. Augmented events can gain outcomes after purchase, breaking exhaustiveness, so they are excluded.
 - Requires **distinct normalized outcome names** for every market in the event.
-- Buys **YES** on each outcome at **best ask** (taker path), sizes with **`MAX_BASKET_NOTIONAL`**, checks **`MIN_COMPLETE_SET_EDGE_BPS`** and positive profit.
+- Buys **YES** on each outcome at **best ask** (taker path), sizes with **`MAX_BASKET_NOTIONAL`**, checks **`MIN_COMPLETE_SET_EDGE_BPS` + `ARB_SLIPPAGE_BUFFER_BPS`** and positive profit.
 - Ranked by annualized edge (with time-to-expiry) among candidates; list truncated before risk (`max_opportunities_per_cycle * 10` cap in scanner).
 
 **Neg-risk (`strategy_type=neg_risk`)**
 
 - Requires `neg_risk` or `enable_neg_risk` on the event; skips `neg_risk_augmented` and generic “Other” outcomes.
-- Builds conversion-style legs from NO asks and YES bids per blueprint; gated by **`MIN_NEG_RISK_EDGE_BPS`**.
+- Builds conversion-style legs from NO asks and YES bids per blueprint; gated by **`MIN_NEG_RISK_EDGE_BPS` + `ARB_SLIPPAGE_BUFFER_BPS`**.
+
+**Safety buffer (both strategies)**
+
+- The effective edge requirement is the per-strategy floor **plus `ARB_SLIPPAGE_BUFFER_BPS`** (default 15). This cushions the gap between the polled snapshot and a live fill: snapshot staleness (`ARB_POLL_SECONDS`), your own market impact, and fee uncertainty. Set to `0` only for tests/replay where fills match the scanned snapshot exactly.
 
 **Files to edit for strategy tuning:** `pricing.py` (thresholds, sizing, exclusions), plus `config.py` for new env knobs.
 
@@ -107,7 +112,7 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 
 **`ArbRiskManager.approve`** — rejects if: halted, `ALLOW_TAKER_EXECUTION=false`, basket notional over cap, too many open baskets / per-strategy baskets, insufficient cash, **event exposure** over `MAX_EVENT_EXPOSURE_PCT` of equity, or **cooldown** active (`OPPORTUNITY_COOLDOWN_SECONDS`).
 
-**Execution** — Up to **`MAX_OPPORTUNITIES_PER_CYCLE`** approved opportunities executed per cycle (in scan order after sort).
+**Execution** — Up to **`MAX_OPPORTUNITIES_PER_CYCLE`** approved opportunities executed per cycle (in scan order after sort). Within a complete-set basket, legs are placed **thinnest-available-depth first** (`ArbEngine._order_legs_by_fill_risk`): because baskets are non-atomic, a leg that fails its FOK should reject before capital is committed to the easy legs, minimizing the half-built-basket unwind handled by `_liquidate_event_positions`. (Paper fills are identical regardless of order — all legs match one frozen snapshot — so this only changes live behavior.)
 
 ---
 
@@ -121,7 +126,8 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 | `MAX_TRACKED_EVENTS` | Hard cap on events after sort |
 | `MIN_EVENT_LIQUIDITY` / `MIN_OUTCOMES_PER_EVENT` | Universe floor |
 | `CATEGORY_ALLOWLIST` / `CATEGORY_BLOCKLIST` | Category gating |
-| `MIN_COMPLETE_SET_EDGE_BPS` / `MIN_NEG_RISK_EDGE_BPS` | Scanner floors |
+| `MIN_COMPLETE_SET_EDGE_BPS` / `MIN_NEG_RISK_EDGE_BPS` | Per-strategy edge floors |
+| `ARB_SLIPPAGE_BUFFER_BPS` | Extra edge required on top of each floor (snapshot staleness + impact + fee uncertainty); default 15 |
 | `MAX_BASKET_NOTIONAL`, `MAX_TOTAL_OPEN_BASKETS`, `MAX_BASKETS_PER_STRATEGY`, `MAX_OPPORTUNITIES_PER_CYCLE` | Size and concurrency limits |
 | `MAX_EVENT_EXPOSURE_PCT`, `OPPORTUNITY_COOLDOWN_SECONDS` | Risk |
 | `ALLOW_TAKER_EXECUTION` | Must be true for current executor path |

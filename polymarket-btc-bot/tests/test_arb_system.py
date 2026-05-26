@@ -10,7 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from src.arb.control import ArbControlAPI, cors_middleware
 from src.arb.engine import ArbEngine
 from src.arb.exchange import PaperExchange
-from src.arb.models import ArbEvent, OrderIntent, OutcomeMarket, PriceLevel, TokenBook
+from src.arb.models import ArbEvent, OpportunityLeg, OrderIntent, OutcomeMarket, PriceLevel, TokenBook
 from src.arb.pricing import OpportunityScanner
 from src.arb.replay import replay_cycle_records
 from src.arb.repository import ArbRepository
@@ -47,6 +47,7 @@ def _complete_set_event() -> tuple[ArbEvent, dict[str, TokenBook]]:
     event = ArbEvent(
         event_id="event-1",
         title="Who wins?",
+        neg_risk=True,
         markets=[
             OutcomeMarket("event-1", "m1", "A?", "A", "y1", "n1", tick_size=0.01),
             OutcomeMarket("event-1", "m2", "B?", "B", "y2", "n2", tick_size=0.01),
@@ -291,6 +292,94 @@ def test_neg_risk_scanner_skips_augmented_and_other_outcomes():
 
     neg_risk = [opp for opp in opportunities if opp.strategy_type == "neg_risk_conversion"]
     assert neg_risk == []
+
+
+def _thin_edge_complete_set_event() -> tuple[ArbEvent, dict[str, TokenBook]]:
+    """Mutually-exclusive event whose complete set has only a ~20 bps raw edge."""
+    event = ArbEvent(
+        event_id="event-thin",
+        title="Thin edge",
+        neg_risk=True,
+        markets=[
+            OutcomeMarket("event-thin", "m1", "A?", "A", "y1", "n1", tick_size=0.001),
+            OutcomeMarket("event-thin", "m2", "B?", "B", "y2", "n2", tick_size=0.001),
+            OutcomeMarket("event-thin", "m3", "C?", "C", "y3", "n3", tick_size=0.001),
+        ],
+    )
+    # YES asks sum to 0.998 => edge = (1 - 0.998) / 0.998 ≈ 20 bps.
+    books = {
+        "y1": TokenBook("y1", event_time(), 0.331, 0.333, bids=[PriceLevel(0.331, 100)], asks=[PriceLevel(0.333, 100)]),
+        "y2": TokenBook("y2", event_time(), 0.331, 0.333, bids=[PriceLevel(0.331, 100)], asks=[PriceLevel(0.333, 100)]),
+        "y3": TokenBook("y3", event_time(), 0.330, 0.332, bids=[PriceLevel(0.330, 100)], asks=[PriceLevel(0.332, 100)]),
+    }
+    return event, books
+
+
+def test_complete_set_scanner_requires_neg_risk_structure():
+    """sum(YES asks) < 1 is arbitrage only on mutually-exclusive (neg-risk) events."""
+    event, books = _complete_set_event()
+    event.neg_risk = False
+    event.enable_neg_risk = False
+    scanner = OpportunityScanner(_settings())
+
+    opportunities = scanner.scan([event], books)
+    assert [o for o in opportunities if o.strategy_type == "complete_set"] == []
+
+    # Same books and prices, but a genuine neg-risk event: now eligible.
+    event.enable_neg_risk = True
+    eligible = scanner.scan([event], books)
+    assert len([o for o in eligible if o.strategy_type == "complete_set"]) == 1
+
+
+def test_complete_set_scanner_skips_augmented_neg_risk():
+    """Augmented neg-risk events can gain outcomes later, breaking exhaustiveness."""
+    event, books = _complete_set_event()
+    event.neg_risk_augmented = True
+    scanner = OpportunityScanner(_settings())
+
+    opportunities = scanner.scan([event], books)
+    assert [o for o in opportunities if o.strategy_type == "complete_set"] == []
+
+
+def test_slippage_buffer_raises_required_edge():
+    event, books = _thin_edge_complete_set_event()
+
+    # ~20 bps raw edge clears the 10 bps floor but not floor + 15 bps buffer.
+    guarded = OpportunityScanner(
+        _settings(min_complete_set_edge_bps=10.0, arb_slippage_buffer_bps=15.0)
+    ).scan([event], books)
+    assert [o for o in guarded if o.strategy_type == "complete_set"] == []
+
+    # With the buffer disabled, the same edge is eligible.
+    unguarded = OpportunityScanner(
+        _settings(min_complete_set_edge_bps=10.0, arb_slippage_buffer_bps=0.0)
+    ).scan([event], books)
+    assert len([o for o in unguarded if o.strategy_type == "complete_set"]) == 1
+
+
+def test_complete_set_legs_execute_thinnest_first():
+    """Engine fills the thinnest (most fragile) leg first to limit unwind risk."""
+    settings = _settings()
+    unused_db = os.path.join(tempfile.gettempdir(), "arb_unit_unused.db")
+    engine = ArbEngine(
+        config=settings,
+        legacy_db=Database(path=unused_db),
+        repository=ArbRepository(path=unused_db),
+        universe=StaticUniverse([]),
+        market_data=StaticMarketData({}),
+    )
+    event, books = _complete_set_event()
+    books["y2"].asks = [PriceLevel(0.25, 50)]
+    books["y3"].asks = [PriceLevel(0.20, 4)]
+    engine._last_books = books
+
+    legs = [
+        OpportunityLeg("m1", "y1", "A", "YES", "BUY", 0.30, 3.0),
+        OpportunityLeg("m2", "y2", "B", "YES", "BUY", 0.25, 3.0),
+        OpportunityLeg("m3", "y3", "C", "YES", "BUY", 0.20, 3.0),
+    ]
+    ordered = engine._order_legs_by_fill_risk(legs)
+    assert [leg.token_id for leg in ordered] == ["y3", "y2", "y1"]
 
 
 @pytest.mark.anyio
@@ -588,6 +677,7 @@ def test_scanner_capital_required_matches_exchange_cash_for_complete_set():
     event = ArbEvent(
         event_id="e-depth",
         title="Depth test",
+        neg_risk=True,
         markets=[
             OutcomeMarket(
                 "e-depth", "m1", "?", "A", "y1", "n1", tick_size=0.01, fees_enabled=True

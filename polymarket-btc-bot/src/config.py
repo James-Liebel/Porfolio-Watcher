@@ -142,6 +142,56 @@ class Settings(BaseSettings):
     category_allowlist: str = Field(default="", alias="CATEGORY_ALLOWLIST")
     category_blocklist: str = Field(default="", alias="CATEGORY_BLOCKLIST")
 
+    # ── Real-time streaming (the latency edge) ───────────────────────────
+    # When enabled, `python -m src` maintains a live order-book cache over the
+    # Polymarket CLOB market WebSocket and re-scans an event the instant one of
+    # its books changes, instead of waiting out a full REST poll. This is what
+    # lets the bot react in milliseconds and place the trade before pollers do.
+    arb_streaming_enabled: bool = Field(default=True, alias="ARB_STREAMING_ENABLED")
+    clob_ws_url: str = Field(
+        default="wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        alias="CLOB_WS_URL",
+    )
+    # Universe (which events exist) changes slowly, so refresh Gamma + resubscribe
+    # on this slower cadence while books stream continuously underneath.
+    arb_universe_refresh_seconds: int = Field(
+        default=30, alias="ARB_UNIVERSE_REFRESH_SECONDS"
+    )
+    # A streamed book older than this (no update received) is treated as stale and
+    # excluded from scanning so we never trade against a frozen quote.
+    arb_book_staleness_seconds: float = Field(
+        default=6.0, alias="ARB_BOOK_STALENESS_SECONDS"
+    )
+    # Coalesce a burst of book updates for the same event before re-scanning, so a
+    # noisy book doesn't trigger hundreds of redundant scans per second.
+    arb_hot_scan_debounce_ms: int = Field(
+        default=15, alias="ARB_HOT_SCAN_DEBOUNCE_MS"
+    )
+    # Cap on simultaneous token subscriptions (2 tokens per market). Protects the
+    # socket and CPU when MAX_TRACKED_EVENTS is large.
+    arb_max_book_subscriptions: int = Field(
+        default=1200, alias="ARB_MAX_BOOK_SUBSCRIPTIONS"
+    )
+    # Reconnect backoff ceiling for the market WebSocket.
+    arb_ws_reconnect_max_seconds: float = Field(
+        default=10.0, alias="ARB_WS_RECONNECT_MAX_SECONDS"
+    )
+
+    # ── Live execution (real money — OFF by default, multiple hard gates) ─
+    # Sending real Polymarket orders requires ALL of: paper_trade=false,
+    # enable_live_execution=true, valid API/wallet creds, and live_dry_run=false.
+    # With any gate unmet the engine stays on the simulated PaperExchange or, in
+    # dry-run, builds and logs the exact orders without posting them.
+    enable_live_execution: bool = Field(
+        default=False, alias="ENABLE_LIVE_EXECUTION"
+    )
+    live_dry_run: bool = Field(default=True, alias="LIVE_DRY_RUN")
+    # Hard ceiling on a single live order's USDC notional, independent of basket
+    # sizing — a last-line cap against a fat-finger config.
+    live_max_order_usdc: float = Field(default=25.0, alias="LIVE_MAX_ORDER_USDC")
+    # Order signature type for py-clob-client (2 = Polymarket proxy/email wallet).
+    clob_signature_type: int = Field(default=2, alias="CLOB_SIGNATURE_TYPE")
+
     # ── Control API ─────────────────────────────────────────────────────
     control_api_port: int = Field(default=8765, alias="CONTROL_API_PORT")
     # Empty = no token auth on loopback API; set a strong random value if the port may be reachable by others.
@@ -181,6 +231,41 @@ class Settings(BaseSettings):
     # ── Multi-asset risk ─────────────────────────────────────────────────
     max_positions_per_asset: int = Field(default=1, alias="MAX_POSITIONS_PER_ASSET")
     max_total_exposure_pct: float = Field(default=0.40, alias="MAX_TOTAL_EXPOSURE_PCT")
+
+    def has_live_credentials(self) -> bool:
+        """True only if every secret needed to sign + post real orders is present."""
+        return all(
+            str(value).strip()
+            for value in (
+                self.polymarket_api_key,
+                self.polymarket_secret,
+                self.polymarket_passphrase,
+                self.polymarket_wallet_address,
+                self.wallet_private_key,
+            )
+        )
+
+    def live_execution_configured(self) -> bool:
+        """True when the live adapter should be attached at all.
+
+        Dry-run still counts as configured: the live adapter is exercised end to
+        end (it builds and signs the real orders) but withholds the final POST.
+        Requires real credentials so a misconfig can never silently fall through
+        to an un-authenticated client.
+        """
+        return (
+            (not self.paper_trade)
+            and self.enable_live_execution
+            and self.has_live_credentials()
+        )
+
+    def live_execution_armed(self) -> bool:
+        """True only when real orders will actually be POSTed to Polymarket.
+
+        This is `live_execution_configured()` minus dry-run. Use it for honest
+        mode labeling in the API/dashboard.
+        """
+        return self.live_execution_configured() and (not self.live_dry_run)
 
     def category_is_allowed(self, category: str) -> bool:
         """Return True if category passes allowlist/blocklist filters."""

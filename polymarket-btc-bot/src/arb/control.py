@@ -86,6 +86,10 @@ class ArbControlAPI:
     async def _summary(self, request: web.Request) -> web.Response:
         return _json(self._engine.summary())
 
+    async def _streaming(self, request: web.Request) -> web.Response:
+        """Live-data + latency health (also served at /latency)."""
+        return _json(self._engine.streaming_snapshot())
+
     async def _events(self, request: web.Request) -> web.Response:
         return _json(self._engine.events_snapshot())
 
@@ -253,6 +257,8 @@ class ArbControlAPI:
         app = web.Application(middlewares=[cors_middleware, self.auth_middleware])
         app.router.add_get("/health", self._health)
         app.router.add_get("/summary", self._summary)
+        app.router.add_get("/streaming", self._streaming)
+        app.router.add_get("/latency", self._streaming)
         app.router.add_get("/events", self._events)
         app.router.add_get("/opportunities", self._opportunities)
         app.router.add_get("/orders", self._orders)

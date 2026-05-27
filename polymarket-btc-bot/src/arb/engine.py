@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -15,6 +16,7 @@ from .models import ArbEvent, ArbOpportunity, BasketRecord, OpportunityLeg, Orde
 from .pricing import OpportunityScanner
 from .repository import ArbRepository
 from .risk import ArbRiskManager
+from .streaming import ClobBookStream, TokenMeta
 from .universe import GammaUniverseService
 
 logger = structlog.get_logger(__name__)
@@ -24,7 +26,8 @@ def _book_source_counts(books: dict[str, TokenBook]) -> dict[str, int]:
     clob = synthetic = other = 0
     for book in books.values():
         src = (book.source or "").strip().lower()
-        if src == "clob":
+        # Both REST ("clob") and WebSocket ("clob_ws") books are live exchange data.
+        if src.startswith("clob"):
             clob += 1
         elif src == "synthetic":
             synthetic += 1
@@ -56,7 +59,7 @@ class ArbEngine:
         self._market_data = market_data or ClobMarketDataService(config)
         self._scanner = scanner or OpportunityScanner(config)
         self._risk = risk or ArbRiskManager(config)
-        self._exchange = exchange or PaperExchange(config)
+        self._exchange = exchange or self._build_default_exchange(config)
         self._events: dict[str, ArbEvent] = {}
         self._active_event_ids: set[str] = set()
         self._last_books = {}
@@ -68,6 +71,44 @@ class ArbEngine:
         self._cycle_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._initialized = False
+
+        # ── Streaming hot path ──────────────────────────────────────────
+        # The stream is created lazily in run() (streaming mode only); it stays
+        # None for run_cycle()-driven tests, so the polling contract is untouched.
+        self._stream: ClobBookStream | None = None
+        # Optional injected WebSocket connector (tests drive run() without a socket).
+        self._stream_connector = None
+        self._token_event: dict[str, str] = {}
+        self._dirty_events: set[str] = set()
+        self._dirty_signal = asyncio.Event()
+        self._streaming_active = False
+        # Rolling latency observability for the event-driven path.
+        self._last_hot_eval_at: datetime | None = None
+        self._hot_evals = 0
+        self._hot_executions = 0
+        self._last_hot_latency_ms: float | None = None
+        self._last_hot_execution_at: datetime | None = None
+
+    def _build_default_exchange(self, config: Settings) -> PaperExchange:
+        """Choose live vs. paper execution from config, defaulting to safe paper.
+
+        A live adapter is attached only when fully configured (real money OFF by
+        default); a half-configured live request (e.g. no credentials) logs loudly
+        and stays on the simulated exchange rather than silently misbehaving.
+        """
+        if config.live_execution_configured():
+            from .live_exchange import LiveClobExchange
+
+            logger.warning(
+                "arb_engine.live_execution_selected",
+                armed=config.live_execution_armed(),
+                dry_run=config.live_dry_run,
+                max_order_usdc=config.live_max_order_usdc,
+            )
+            return LiveClobExchange(config)
+        if (not config.paper_trade) and config.enable_live_execution and not config.has_live_credentials():
+            logger.error("arb_engine.live_requested_without_credentials_using_paper")
+        return PaperExchange(config)
 
     @property
     def risk(self) -> ArbRiskManager:
@@ -98,10 +139,20 @@ class ArbEngine:
 
     async def shutdown(self) -> None:
         self._stop.set()
+        self._dirty_signal.set()
+        if self._stream is not None:
+            await self._stream.close()
         await self._universe.close()
 
     async def run(self) -> None:
         await self.initialize()
+        if self._config.arb_streaming_enabled:
+            await self._run_streaming()
+        else:
+            await self._run_polling()
+
+    async def _run_polling(self) -> None:
+        """Legacy REST poll loop: full cycle, wait, repeat (no streaming)."""
         while not self._stop.is_set():
             cycle_failed = False
             try:
@@ -113,26 +164,204 @@ class ArbEngine:
                 logger.error("arb_engine.cycle_error", error=str(exc), exc_info=True)
             if cycle_failed:
                 backoff = max(1, min(self._config.arb_cycle_error_backoff_seconds, 300))
-                try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
-                except asyncio.TimeoutError:
-                    pass
+                if await self._sleep_or_stop(backoff):
+                    break
+            if await self._sleep_or_stop(self._config.arb_poll_seconds):
+                break
+
+    async def _run_streaming(self) -> None:
+        """Event-driven mode: a live book stream drives millisecond re-scans.
+
+        Three concurrent jobs run under one stop signal:
+          • the WebSocket stream maintaining the book cache,
+          • a slow loop that refreshes the Gamma universe / subscriptions and runs
+            a full reconcile cycle (also drives auto-settlement),
+          • the hot loop that re-scans only the events whose books just changed.
+        """
+        self._stream = ClobBookStream(
+            self._config,
+            on_books_changed=self._on_books_changed,
+            connector=self._stream_connector,
+        )
+        attach = getattr(self._market_data, "attach_stream", None)
+        if callable(attach):
+            attach(self._stream)
+        self._streaming_active = True
+
+        # Start the stream and hot loop first so the socket begins filling books the
+        # instant subscriptions are set. Then load the universe (fast Gamma calls);
+        # the stream connects and streams books in concurrently — no startup REST
+        # sweep. The slow loop's periodic run_cycle then handles full reconciles,
+        # REST fallback for anything the stream missed, and auto-settlement.
+        stream_task = asyncio.create_task(self._stream.run(), name="arb_book_stream")
+        hot_task = asyncio.create_task(self._hot_loop(), name="arb_hot_loop")
+        try:
+            async with self._cycle_lock:
+                await self._refresh_universe_locked()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("arb_engine.initial_universe_error", error=str(exc), exc_info=True)
+        slow_task = asyncio.create_task(self._slow_loop(), name="arb_slow_loop")
+
+        tasks = [stream_task, hot_task, slow_task]
+        logger.info(
+            "arb_engine.streaming_started",
+            ws_url=self._config.clob_ws_url,
+            universe_refresh_seconds=self._config.arb_universe_refresh_seconds,
+            subscribed=self._stream.subscribed_count,
+        )
+        try:
+            await self._stop.wait()
+        finally:
+            self._streaming_active = False
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _slow_loop(self) -> None:
+        """Periodic full reconcile: refresh universe, rescan everything, settle."""
+        while not self._stop.is_set():
+            if await self._sleep_or_stop(self._config.arb_universe_refresh_seconds):
+                break
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self._config.arb_poll_seconds)
-            except asyncio.TimeoutError:
+                await self.run_cycle()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("arb_engine.reconcile_error", error=str(exc), exc_info=True)
+
+    async def _hot_loop(self) -> None:
+        """Drain book-change notifications and re-scan only the affected events."""
+        debounce = max(0.0, self._config.arb_hot_scan_debounce_ms / 1000.0)
+        while not self._stop.is_set():
+            await self._dirty_signal.wait()
+            if self._stop.is_set():
+                break
+            # Let a burst of deltas for the same event coalesce into one scan.
+            if debounce:
+                await self._sleep_or_stop(debounce)
+            self._dirty_signal.clear()
+            batch, self._dirty_events = self._dirty_events, set()
+            if not batch:
                 continue
+            try:
+                await self._hot_evaluate(batch)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("arb_engine.hot_eval_error", error=str(exc), exc_info=True)
+
+    def _on_books_changed(self, token_ids: set[str]) -> None:
+        """Stream callback (sync, in-loop): map changed tokens to dirty events."""
+        woke = False
+        for token_id in token_ids:
+            event_id = self._token_event.get(token_id)
+            if event_id is not None:
+                self._dirty_events.add(event_id)
+                woke = True
+        if woke:
+            self._dirty_signal.set()
+
+    async def _hot_evaluate(self, event_ids: set[str]) -> int:
+        """Scan only ``event_ids`` against the freshest streamed books and execute.
+
+        This is the latency-critical path: from a book delta to a submitted order
+        without waiting for the next full poll. Books come straight from the live
+        cache; stale tokens are skipped so we never trade a frozen quote.
+        """
+        started = time.perf_counter()
+        async with self._cycle_lock:
+            events = [self._events[e] for e in event_ids if e in self._events]
+            if not events or self._stream is None:
+                return 0
+            token_ids = [
+                token_id
+                for event in events
+                for market in event.markets
+                for token_id in (market.yes_token_id, market.no_token_id)
+            ]
+            books = self._stream.fresh_books(token_ids)
+            if not books:
+                return 0
+
+            self._last_books.update(books)
+            self._exchange.update_books(books)
+            real_books = {tid: book for tid, book in books.items() if book.source != "synthetic"}
+            opportunities = self._scanner.scan(events, real_books)
+            self._opportunities = opportunities
+            executed = await self._approve_and_execute(opportunities, record_rejections=False)
+
+            self._hot_evals += 1
+            self._last_hot_eval_at = utc_now()
+            self._last_hot_latency_ms = (time.perf_counter() - started) * 1000.0
+            if executed:
+                self._hot_executions += executed
+                self._last_hot_execution_at = self._last_hot_eval_at
+                await self._repository.replace_positions(self._exchange.get_positions())
+                await self._persist_runtime_state()
+                logger.info(
+                    "arb_engine.hot_executed",
+                    events=len(events),
+                    executed=executed,
+                    latency_ms=round(self._last_hot_latency_ms, 2),
+                )
+            return executed
+
+    def _sync_stream_subscriptions(self, events: list[ArbEvent]) -> None:
+        """Refresh the stream's token subscriptions + token→event index."""
+        if self._stream is None:
+            return
+        subscriptions: list[tuple[str, TokenMeta]] = []
+        token_event: dict[str, str] = {}
+        for event in events:
+            for market in event.markets:
+                meta = TokenMeta(
+                    market_id=market.market_id,
+                    event_id=event.event_id,
+                    fees_enabled=market.fees_enabled,
+                    tick_size=market.tick_size,
+                )
+                for token_id in (market.yes_token_id, market.no_token_id):
+                    if not token_id:
+                        continue
+                    subscriptions.append((token_id, meta))
+                    token_event[token_id] = event.event_id
+        self._token_event = token_event
+        self._stream.set_subscriptions(subscriptions)
+
+    async def _sleep_or_stop(self, seconds: float) -> bool:
+        """Sleep up to ``seconds`` or until stop is set. Returns True if stopping."""
+        try:
+            await asyncio.wait_for(self._stop.wait(), timeout=max(0.0, seconds))
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def _refresh_universe_locked(self) -> list[ArbEvent]:
+        """Refresh the Gamma universe and re-point stream subscriptions.
+
+        Assumes the cycle lock is held. Factored out of run_cycle so streaming
+        startup can load the universe (fast Gamma calls) and subscribe the stream
+        without first paying for a full REST book sweep — books then arrive over
+        the WebSocket within a second or two.
+        """
+        events = await self._universe.refresh()
+        self._active_event_ids = {event.event_id for event in events}
+        for event in events:
+            self._events[event.event_id] = event
+        self._exchange.update_universe(events)
+        # Keep the live stream watching exactly the current universe's tokens.
+        self._sync_stream_subscriptions(events)
+        for event in events:
+            await self._repository.upsert_event(event)
+        return events
 
     async def run_cycle(self) -> dict[str, Any]:
         await self.initialize()
         async with self._cycle_lock:
             self._last_auto_settlements = []
-            events = await self._universe.refresh()
-            self._active_event_ids = {event.event_id for event in events}
-            for event in events:
-                self._events[event.event_id] = event
-            self._exchange.update_universe(events)
-            for event in events:
-                await self._repository.upsert_event(event)
+            events = await self._refresh_universe_locked()
 
             books = await self._market_data.refresh(events)
             # Strip synthetic books before scanning so false edges are never scored.
@@ -158,29 +387,7 @@ class ArbEngine:
             auto_settled = await self._auto_settle_resolved_events_locked()
             opportunities = self._scanner.scan(events, real_books)
             self._opportunities = opportunities
-            executed = 0
-
-            for opportunity in opportunities:
-                open_baskets = self._open_basket_count()
-                approved, reason = self._risk.approve(
-                    opportunity,
-                    self._exchange,
-                    open_baskets,
-                    open_baskets_by_strategy=self._open_basket_count_by_strategy(),
-                )
-                await self._repository.record_opportunity(
-                    opportunity,
-                    decision="approved" if approved else "rejected",
-                    reason="" if approved else reason,
-                )
-                if not approved:
-                    continue
-                if executed >= self._config.max_opportunities_per_cycle:
-                    break
-                basket = await self._execute_opportunity(opportunity)
-                if basket is not None:
-                    executed += 1
-                    self._risk.record_execution(opportunity)
+            executed = await self._approve_and_execute(opportunities)
 
             await self._repository.replace_positions(self._exchange.get_positions())
             await self._persist_runtime_state()
@@ -204,6 +411,39 @@ class ArbEngine:
                 books_other=bsrc["books_other"],
             )
             return dict(self._last_cycle_summary)
+
+    async def _approve_and_execute(
+        self, opportunities: list[ArbOpportunity], *, record_rejections: bool = True
+    ) -> int:
+        """Gate opportunities through risk and execute up to the per-cycle cap.
+
+        Shared by the full poll cycle and the streaming hot path. The hot path
+        sets ``record_rejections=False`` so a persistent-but-blocked edge (e.g. in
+        cooldown) doesn't write a rejection row on every book tick; the slow cycle
+        still records the full decision trail.
+        """
+        executed = 0
+        for opportunity in opportunities:
+            open_baskets = self._open_basket_count()
+            approved, reason = self._risk.approve(
+                opportunity,
+                self._exchange,
+                open_baskets,
+                open_baskets_by_strategy=self._open_basket_count_by_strategy(),
+            )
+            if approved:
+                await self._repository.record_opportunity(opportunity, decision="approved", reason="")
+            elif record_rejections:
+                await self._repository.record_opportunity(opportunity, decision="rejected", reason=reason)
+            if not approved:
+                continue
+            if executed >= self._config.max_opportunities_per_cycle:
+                break
+            basket = await self._execute_opportunity(opportunity)
+            if basket is not None:
+                executed += 1
+                self._risk.record_execution(opportunity)
+        return executed
 
     async def _execute_opportunity(self, opportunity: ArbOpportunity) -> BasketRecord | None:
         basket = BasketRecord(
@@ -439,9 +679,47 @@ class ArbEngine:
                 "slippage_buffer_bps": buffer_bps,
                 "effective_min_complete_set_edge_bps": self._config.min_complete_set_edge_bps + buffer_bps,
                 "effective_min_neg_risk_edge_bps": self._config.min_neg_risk_edge_bps + buffer_bps,
+                "streaming": self._streaming_metrics_compact(),
             }
         )
         return payload
+
+    def _streaming_metrics_compact(self) -> dict[str, Any]:
+        return {
+            "enabled": self._config.arb_streaming_enabled,
+            "active": self._streaming_active,
+            "connected": self._stream.is_connected if self._stream is not None else False,
+            "subscribed": self._stream.subscribed_count if self._stream is not None else 0,
+            "hot_evals": self._hot_evals,
+            "hot_executions": self._hot_executions,
+            "last_hot_latency_ms": (
+                round(self._last_hot_latency_ms, 3) if self._last_hot_latency_ms is not None else None
+            ),
+            "last_hot_eval_at": self._last_hot_eval_at.isoformat() if self._last_hot_eval_at else None,
+        }
+
+    def streaming_snapshot(self) -> dict[str, Any]:
+        """Full latency/health view for the /streaming (a.k.a. /latency) endpoint."""
+        return {
+            "timestamp": utc_now().isoformat(),
+            "execution_mode": getattr(self._exchange, "execution_mode", "paper"),
+            "streaming_enabled": self._config.arb_streaming_enabled,
+            "streaming_active": self._streaming_active,
+            "universe_refresh_seconds": self._config.arb_universe_refresh_seconds,
+            "hot_scan_debounce_ms": self._config.arb_hot_scan_debounce_ms,
+            "book_staleness_seconds": self._config.arb_book_staleness_seconds,
+            "pending_dirty_events": len(self._dirty_events),
+            "hot_evals": self._hot_evals,
+            "hot_executions": self._hot_executions,
+            "last_hot_latency_ms": (
+                round(self._last_hot_latency_ms, 3) if self._last_hot_latency_ms is not None else None
+            ),
+            "last_hot_eval_at": self._last_hot_eval_at.isoformat() if self._last_hot_eval_at else None,
+            "last_hot_execution_at": (
+                self._last_hot_execution_at.isoformat() if self._last_hot_execution_at else None
+            ),
+            "stream": self._stream.metrics() if self._stream is not None else None,
+        }
 
     def events_snapshot(self) -> list[dict[str, Any]]:
         event_ids = self._active_event_ids or set(self._events)

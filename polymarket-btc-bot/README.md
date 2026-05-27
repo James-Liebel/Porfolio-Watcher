@@ -3,10 +3,12 @@
 This repository now boots a **paper-first structural-arbitrage runtime** for Polymarket.
 
 Active runtime:
+- **Real-time order-book streaming** over the Polymarket CLOB market WebSocket, with an event-driven hot path that re-scans and executes in **milliseconds** when a book changes (built to place trades before REST pollers)
 - Negative-risk conversion scanning
 - Complete-set / basket mispricing scanning
 - Queue-aware enough paper exchange state for fills, positions, conversions, and settlement
-- Local control API for paper operations and monitoring
+- **Gated live execution adapter** for real Polymarket orders (OFF by default, behind multiple hard safety gates + dry-run)
+- Local control API for operations and monitoring, including a `/streaming` (`/latency`) health view
 
 The older 5-minute directional crypto modules are still in the tree as legacy code, but `python -m src` now starts the structural-arb system.
 
@@ -110,20 +112,29 @@ This is the **default** and what `python -m src` is built for.
    .\.venv\Scripts\python.exe -m pytest tests -q
    ```
 
-**Important:** The structural-arb engine always uses the in-repo **`PaperExchange`** (simulated fills, positions, and settlement). Your `PAPER_TRADE` flag mainly drives **labeling** in the API/UI and consistency with the rest of the config; it does not toggle a separate “live matching engine” for arb.
+**Important:** With default settings the structural-arb engine uses the in-repo **`PaperExchange`** (simulated fills, positions, and settlement). `PAPER_TRADE=true` keeps you there. A real-money **`LiveClobExchange`** is attached only when you explicitly arm it (next section); `GET /summary` always reports the **actual** `execution_mode` (`paper` / `live_dry_run` / `live`).
 
 ### Live / real-money trading (read this before changing `.env`)
 
-- **`python -m src` does not place real Polymarket orders.** There is no live CLOB execution wired into the structural-arb loop in this repository. Setting **`PAPER_TRADE=false` does not turn on real arb trades** — you would still be on the paper exchange path for arb logic.
-- The codebase still contains a **legacy** `src/execution/trader.py` (`Trader`) that *can* talk to the real Polymarket API when **`PAPER_TRADE=false`** and API/wallet fields are set, but **there is no maintained `python -m …` entrypoint** that runs that directional loop alongside the current `main.py` (which only starts the arb engine). Treat live directional trading as **bring-your-own runner** or historical code, not something this repo starts by default.
-- If you later add live arb execution yourself, you would still follow wallet and API setup in **`setup/polymarket_wallet.md`**, use strong **`CONTROL_API_TOKEN`**, and never commit **`.env`**.
+Live execution is wired but **OFF by default and behind layered hard gates**. Real orders are POSTed only when **all** of these hold:
 
-**If you intend to use real keys at all** (even for experiments), set in `.env`:
+1. `PAPER_TRADE=false`
+2. `ENABLE_LIVE_EXECUTION=true`
+3. `LIVE_DRY_RUN=false`
+4. All live secrets present: `POLYMARKET_API_KEY`, `POLYMARKET_SECRET`, `POLYMARKET_PASSPHRASE`, `POLYMARKET_WALLET_ADDRESS`, `WALLET_PRIVATE_KEY`
 
-- `PAPER_TRADE=false`
-- `POLYMARKET_API_KEY`, `POLYMARKET_SECRET`, `POLYMARKET_PASSPHRASE`, `POLYMARKET_WALLET_ADDRESS`, `WALLET_PRIVATE_KEY` as described in `setup/polymarket_wallet.md`
+If any gate is unmet you stay on the simulated exchange. The recommended path before risking money:
 
-Then run **`python scripts/check_env.py`** — it must exit **0** in live mode (all required secrets present).
+- **Dry-run first.** Set `PAPER_TRADE=false`, `ENABLE_LIVE_EXECUTION=true`, keep **`LIVE_DRY_RUN=true`**, and add your secrets. The engine attaches the live adapter and exercises the *entire* live path — it builds and signs the exact `OrderArgs` and logs them (`live_exchange.dry_run_order`) — but **does not POST**, simulating fills locally instead. `execution_mode` reads `live_dry_run`. Validate the logged orders against the markets you expect.
+- **Arm it.** Only once dry-run looks correct, set `LIVE_DRY_RUN=false`. `execution_mode` becomes `live` and orders are sent as Fill-or-Kill takers, each capped at `LIVE_MAX_ORDER_USDC` USDC notional. Start with a small ceiling.
+
+Safety characteristics of the live adapter (`src/arb/live_exchange.py`):
+
+- **Per-order USDC ceiling** (`LIVE_MAX_ORDER_USDC`) independent of basket sizing — a last-line cap against a fat-finger config.
+- **Conservative fill interpretation:** an ambiguous POST response is treated as *not filled* (a phantom fill is the dangerous error), so the engine never books inventory it doesn't hold.
+- **Neg-risk conversion is refused when armed** (the on-chain `NegRiskAdapter` call is not wired); only complete-set baskets — pure CLOB taker orders — execute live. This is enforced in the risk gate *before* any leg is bought.
+
+Follow wallet/API setup in **`setup/polymarket_wallet.md`**, use a strong **`CONTROL_API_TOKEN`**, and never commit **`.env`**. Run **`python scripts/check_env.py`** — it must exit **0** in live mode (all required secrets present).
 
 ---
 
@@ -138,7 +149,8 @@ Optional auth:
 
 Useful endpoints:
 - `GET /health`
-- `GET /summary` (includes `last_cycle.books_clob` / `books_synthetic` / `books_other` for data-quality checks)
+- `GET /summary` (includes `execution_mode`, a `streaming` health block, and `last_cycle.books_clob` / `books_synthetic` / `books_other` for data-quality checks)
+- `GET /streaming` (alias `GET /latency`) — stream connection health, book freshness, hot-path eval count, and last detection→execute latency
 - `GET /events`
 - `GET /opportunities`
 - `GET /orders`
@@ -175,6 +187,18 @@ Core bankroll / risk:
 - `MAX_EVENT_EXPOSURE_PCT`
 - `MAX_TOTAL_OPEN_BASKETS`
 - `DAILY_LOSS_CAP`
+
+Real-time streaming (latency edge):
+- `ARB_STREAMING_ENABLED` (default `true`)
+- `CLOB_WS_URL`
+- `ARB_UNIVERSE_REFRESH_SECONDS`
+- `ARB_BOOK_STALENESS_SECONDS`
+- `ARB_HOT_SCAN_DEBOUNCE_MS`
+
+Live execution (real money — OFF by default):
+- `ENABLE_LIVE_EXECUTION`
+- `LIVE_DRY_RUN`
+- `LIVE_MAX_ORDER_USDC`
 
 Discovery / execution:
 - `GAMMA_BASE_URL`

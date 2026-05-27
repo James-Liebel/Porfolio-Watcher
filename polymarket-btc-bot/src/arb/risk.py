@@ -41,6 +41,14 @@ class ArbRiskManager:
             self.last_decision_reason = "current arb executor requires taker execution"
             return False, self.last_decision_reason
 
+        # Live armed execution can place CLOB taker orders but cannot perform the
+        # on-chain neg-risk conversion, so refuse conversion baskets before any
+        # capital is committed. Dry-run/paper still simulate them end to end.
+        if opportunity.requires_conversion and self._config.live_execution_armed():
+            self.rejected_count += 1
+            self.last_decision_reason = "neg-risk conversion unsupported in live execution"
+            return False, self.last_decision_reason
+
         # Scanner sizing uses float binary search; allow microscopic overshoot vs cap.
         if opportunity.capital_required > self._config.max_basket_notional + 1e-4:
             self.rejected_count += 1

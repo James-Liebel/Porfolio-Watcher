@@ -96,9 +96,23 @@ class PaperExchange:
         self._token_meta = meta
 
     def sync_books(self, books: dict[str, TokenBook]) -> None:
+        """Replace the full book cache (used by the per-cycle REST refresh)."""
         self._books = {token_id: deepcopy(book) for token_id, book in books.items()}
         now = datetime.now(timezone.utc)
         for token_id in books:
+            self._book_timestamps[token_id] = now
+        self._process_resting_orders()
+
+    def update_books(self, books: dict[str, TokenBook]) -> None:
+        """Merge a subset of books, preserving cached books for other tokens.
+
+        The streaming hot path only knows the tokens that just changed; replacing
+        the whole cache (sync_books) would wipe books for every other position and
+        break mark-to-market. This merges instead.
+        """
+        now = datetime.now(timezone.utc)
+        for token_id, book in books.items():
+            self._books[token_id] = deepcopy(book)
             self._book_timestamps[token_id] = now
         self._process_resting_orders()
 

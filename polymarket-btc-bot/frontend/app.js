@@ -51,19 +51,24 @@ async function fetchJSON(path) {
 
 function renderHeader(health, summary) {
   const badge = document.getElementById("mode-badge");
-  // Key the badge off how fills are actually produced, not the PAPER_TRADE flag.
-  // The arb engine has no live adapter, so execution_mode stays "paper" and the
-  // badge never claims LIVE while orders are in fact simulated.
+  // Key the badge off how fills are ACTUALLY produced (execution_mode from the
+  // attached exchange), never the PAPER_TRADE flag — so it can't claim LIVE while
+  // orders are simulated, nor PAPER while real orders are firing.
   const mode = String(summary.execution_mode || (health.paper_trade ? "paper" : "live")).toLowerCase();
   if (mode === "live") {
     badge.textContent = "LIVE";
     badge.className = "badge badge-live";
-    badge.title = "Orders are sent to Polymarket.";
+    badge.title = "ARMED: real Fill-or-Kill orders are being sent to Polymarket.";
+  } else if (mode === "live_dry_run") {
+    badge.textContent = "LIVE DRY-RUN";
+    badge.className = "badge badge-paper";
+    badge.title =
+      "Live adapter attached but LIVE_DRY_RUN=true: real orders are built, signed and logged but NOT posted. Fills are simulated. Set LIVE_DRY_RUN=false to arm.";
   } else {
     badge.textContent = "PAPER";
     badge.className = "badge badge-paper";
     badge.title =
-      "Execution is simulated by PaperExchange — no orders are sent to Polymarket, even if PAPER_TRADE=false (the arb runtime has no live adapter).";
+      "Execution is simulated by PaperExchange — no orders are sent to Polymarket.";
   }
 
   const pill = document.getElementById("status-pill");

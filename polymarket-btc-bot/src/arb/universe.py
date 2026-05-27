@@ -102,15 +102,22 @@ class GammaUniverseService:
             timeout = aiohttp.ClientTimeout(total=float(self._config.gamma_http_timeout_seconds))
             self._session = aiohttp.ClientSession(timeout=timeout)
 
+        # Order by liquidity desc so the page we fetch is the most liquid events —
+        # where structural (neg-risk) arbitrage actually lives. Without this Gamma
+        # returns an arbitrary page and the scanner finds almost nothing.
         event_params = {
             "active": "true",
             "closed": "false",
             "limit": str(self._config.max_tracked_events),
+            "order": "liquidity",
+            "ascending": "false",
         }
         market_params = {
             "active": "true",
             "closed": "false",
             "limit": str(max(self._config.max_tracked_events * 4, 200)),
+            "order": "liquidity",
+            "ascending": "false",
         }
 
         async with self._session.get(f"{self._config.gamma_base_url}/events", params=event_params) as resp:
@@ -165,28 +172,74 @@ class GammaUniverseService:
 
         return meta, market_rows
 
+    @staticmethod
+    def _market_event_id(row: dict[str, Any]) -> str:
+        """Resolve a market row's parent event id across Gamma response shapes.
+
+        Gamma's /markets rows do NOT carry a top-level `eventId`; each market
+        instead has an `events` list of event objects. Older/alternate shapes use
+        `eventId` / `event_id` / a singular `event` / `parentEventId`. Check them
+        all so markets actually group under their event (otherwise the universe is
+        silently empty and nothing is ever scanned).
+        """
+        for key in ("eventId", "event_id", "parentEventId"):
+            value = str(row.get(key) or "")
+            if value:
+                return value
+        event = row.get("event")
+        if isinstance(event, dict) and event.get("id"):
+            return str(event["id"])
+        events = row.get("events")
+        if isinstance(events, list):
+            for entry in events:
+                if isinstance(entry, dict) and entry.get("id"):
+                    return str(entry["id"])
+        return ""
+
     def _build_events(self, event_rows: list[dict[str, Any]], market_rows: list[dict[str, Any]]) -> list[ArbEvent]:
         event_meta: dict[str, dict[str, Any]] = {}
-        for row in event_rows:
-            event_id = str(row.get("id") or row.get("eventId") or row.get("event_id") or "")
-            if event_id:
-                event_meta[event_id] = row
+        # event_id -> {market_id: market_row}, deduped so embedded + standalone
+        # markets for the same event don't double-count.
+        grouped: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
 
-        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for row in market_rows:
-            event_id = str(
-                row.get("eventId")
-                or row.get("event_id")
-                or (row.get("event") or {}).get("id")
-                or row.get("parentEventId")
+        def _market_id(market_row: dict[str, Any]) -> str:
+            return str(
+                market_row.get("id")
+                or market_row.get("marketId")
+                or market_row.get("conditionId")
                 or ""
             )
-            if event_id:
-                grouped[event_id].append(row)
+
+        # 1. The /events response embeds each event's full `markets` array — the
+        #    most reliable source of the event→markets mapping.
+        for row in event_rows:
+            event_id = str(row.get("id") or row.get("eventId") or row.get("event_id") or "")
+            if not event_id:
+                continue
+            event_meta[event_id] = row
+            for market_row in row.get("markets") or []:
+                if isinstance(market_row, dict):
+                    mid = _market_id(market_row)
+                    if mid:
+                        grouped[event_id].setdefault(mid, market_row)
+
+        # 2. Supplement with separately-fetched markets, but only for events we
+        #    already have authoritative metadata for. Building a complete-set
+        #    candidate from a bare market row would default `negRiskAugmented` to
+        #    False and could wrongly admit an augmented event (breaks set
+        #    exhaustiveness); the embedded-markets path above keeps flags honest.
+        for row in market_rows:
+            event_id = self._market_event_id(row)
+            if not event_id or event_id not in event_meta:
+                continue
+            mid = _market_id(row)
+            if mid:
+                grouped[event_id].setdefault(mid, row)
 
         results: list[ArbEvent] = []
-        for event_id, rows in grouped.items():
+        for event_id, market_map in grouped.items():
             meta = event_meta.get(event_id, {})
+            rows = list(market_map.values())
             markets = [
                 market
                 for market in (self._parse_market(event_id, row) for row in rows)
@@ -410,7 +463,10 @@ class GammaUniverseService:
             default=0.0,
         )
         no_price = _as_float(row.get("noPrice"), default=max(0.0, 1.0 - yes_price) if yes_price else 0.0)
-        tick_size = _as_float(row.get("minimumTickSize") or row.get("tickSize"), default=0.01)
+        tick_size = _as_float(
+            row.get("orderPriceMinTickSize") or row.get("minimumTickSize") or row.get("tickSize"),
+            default=0.01,
+        )
 
         return OutcomeMarket(
             event_id=event_id,

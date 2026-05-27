@@ -4,9 +4,30 @@ This document describes **how the bot behaves today**, how **paper trading stays
 
 ---
 
+## 0. Two run modes: streaming (default) vs. polling
+
+`ArbEngine.run()` picks a mode from `ARB_STREAMING_ENABLED`:
+
+- **Streaming (default, `true`) — the latency edge.** A `ClobBookStream`
+  (`src/arb/streaming.py`) holds a live order-book cache over the Polymarket CLOB
+  **market WebSocket** (`CLOB_WS_URL`). When a tracked token's book changes, the
+  engine re-scans **only that event** and executes immediately — reacting in
+  **milliseconds** instead of waiting out a poll. Three concurrent jobs run under
+  one stop signal: the **stream** (book cache), a **slow loop**
+  (`ARB_UNIVERSE_REFRESH_SECONDS`) that refreshes the Gamma universe + stream
+  subscriptions and runs a full reconcile (also drives auto-settlement), and the
+  **hot loop** that drains book-change notifications and re-scans the dirty events.
+  Stale books (no update within `ARB_BOOK_STALENESS_SECONDS`) are excluded so a
+  frozen quote is never traded.
+- **Polling (`false`) — legacy.** The original `run_cycle` every `ARB_POLL_SECONDS`.
+
+The per-cycle pipeline below (`run_cycle`) is identical in both modes — in
+streaming mode it is the slow-loop reconcile, and `market_data.refresh()` serves
+books from the live cache first, falling back to REST then synthetic.
+
 ## 1. End-to-end cycle (`ArbEngine.run_cycle`)
 
-Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
+Each cycle (slow-loop reconcile while streaming, or every `ARB_POLL_SECONDS` when polling):
 
 1. **Universe** — `GammaUniverseService.refresh()` loads active events + markets from **Gamma** (`GAMMA_BASE_URL`), builds `ArbEvent` snapshots, filters and caps the list (see §4).
 2. **Books** — `ClobMarketDataService.refresh()` fetches **public CLOB** order books (`CLOB_HOST`) for YES/NO tokens, with bounded concurrency (`CLOB_BOOK_FETCH_CONCURRENCY`). If the CLOB client is unavailable, books are **synthetic** (derived from Gamma mid-style prices); see §3.
@@ -30,12 +51,15 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 
 **What is not identical to live**
 
-- **Polling, not WebSockets:** The market moves continuously; you see discrete snapshots every `ARB_POLL_SECONDS`. Tighter poll = closer tracking; more load on APIs.
-- **Synthetic books:** If `ClobClient` fails to initialize or a token fetch errors, that token falls back to a **synthetic** book. Logs warn (`arb_engine.synthetic_books_in_cycle`). Tuning `CLOB_BOOK_FETCH_CONCURRENCY` and network stability reduces this gap.
+- **Snapshots, not continuous truth:** Even streaming, you act on the cache as of the last delta. In streaming mode that lag is milliseconds; in polling mode it is up to `ARB_POLL_SECONDS`.
+- **Synthetic books:** If a token has no fresh stream book and `ClobClient` REST also fails, that token falls back to a **synthetic** book. Logs warn (`arb_engine.synthetic_books_in_cycle`). Synthetic books are stripped before scanning so false edges are never scored.
 - **Paper-only economics:** `PAPER_TAKER_FEE_BPS`, `PAPER_MAKER_REBATE_BPS`, `PAPER_SPREAD_PENALTY_BPS` adjust simulated costs; align them with Polymarket for realistic P&L.
-- **No on-chain or authenticated trading:** Orders are not sent to Polymarket; inventory and cash live only in SQLite + in-memory exchange state. There is **no live execution adapter** — `ArbEngine` always uses `PaperExchange`. `GET /summary` therefore reports **`execution_mode: "paper"`** independent of the `PAPER_TRADE` flag, and the dashboard badge keys off that field (not the flag) so it never shows "LIVE" while fills are simulated. `/summary` also surfaces `effective_min_complete_set_edge_bps` / `effective_min_neg_risk_edge_bps` (floor + buffer) and per-cycle `books_clob` / `books_synthetic` so the operator can see the real eligibility gate and live-data coverage.
 
-**Summary:** Paper mode **mirrors public market state in parallel** each cycle; it does **not** post to the market. To keep paper closest to reality: ensure CLOB books are live (watch synthetic warnings), tune fees/spread penalty, and set poll interval vs rate limits.
+**Live execution (gated, real money).** A `LiveClobExchange` (`src/arb/live_exchange.py`) subclasses `PaperExchange`, so all accounting is identical — only how a single order fills differs. It is attached **only** when fully configured and stays OFF by default. Gates (all required to POST real orders): `PAPER_TRADE=false`, `ENABLE_LIVE_EXECUTION=true`, `LIVE_DRY_RUN=false`, and all live secrets present (`Settings.live_execution_armed()`). With `LIVE_DRY_RUN=true` the live adapter is exercised end to end (builds + signs the real `OrderArgs`, logs them) but **withholds the POST** and simulates locally. Live orders are Fill-or-Kill takers with a hard `LIVE_MAX_ORDER_USDC` per-order ceiling; neg-risk *conversion* baskets are refused when armed (the on-chain `NegRiskAdapter` call is not wired), gated in `ArbRiskManager.approve` before any leg is bought.
+
+- **Honest mode reporting:** `GET /summary` reports `execution_mode` from the **exchange actually attached** — `paper`, `live_dry_run`, or `live` — never inferred from the flag. It also surfaces `effective_min_complete_set_edge_bps` / `effective_min_neg_risk_edge_bps` (floor + buffer), per-cycle `books_clob` / `books_synthetic`, and a `streaming` block (connected, subscribed, hot-eval count, last hot-path latency). `GET /streaming` (alias `GET /latency`) gives the full stream + latency view.
+
+**Summary:** In streaming paper mode the bot **mirrors public market state in near-real-time** and never posts. Switching to armed live trades for real, behind the gates above; keep `LIVE_DRY_RUN=true` until you have validated fills against the logged orders.
 
 ---
 
@@ -43,15 +67,17 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 
 | Concern | Module | Role |
 |--------|--------|------|
-| Settings / env | `src/config.py` | All `Settings` fields and `category_is_allowed()` |
+| Settings / env | `src/config.py` | All `Settings` fields, `category_is_allowed()`, `live_execution_configured/armed()` |
 | Gamma fetch + event build | `src/arb/universe.py` | `_load_payload`, `_build_events`, `_parse_market`, filters, `max_tracked_events` cap |
-| CLOB books | `src/arb/market_data.py` | `refresh`, gated `get_order_book`, synthetic fallback |
+| Live book stream | `src/arb/streaming.py` | `ClobBookStream`: WebSocket cache, `apply_raw` (book/price_change), `fresh_books`, reconnect, metrics |
+| CLOB books | `src/arb/market_data.py` | `refresh` (stream cache → REST → synthetic), `attach_stream`, synthetic fallback |
 | Scanning | `src/arb/pricing.py` | `OpportunityScanner`, complete-set + neg-risk, edge thresholds |
 | Book walking / fees | `src/arb/book_matching.py`, `src/arb/fees.py` | Depth-aware taker simulation, fee helpers |
-| Risk gates | `src/arb/risk.py` | `approve`, cooldowns, halt, drawdown |
-| Paper execution | `src/arb/exchange.py` | `PaperExchange`, positions, conversion, settlement |
-| Orchestration | `src/arb/engine.py` | `run`, `run_cycle`, persistence hooks |
-| HTTP API | `src/arb/control.py` | Dashboard / operator endpoints |
+| Risk gates | `src/arb/risk.py` | `approve`, cooldowns, halt, drawdown, live-conversion gate |
+| Paper execution | `src/arb/exchange.py` | `PaperExchange`, positions, conversion, settlement, `update_books` merge |
+| Live execution | `src/arb/live_exchange.py` | `LiveClobExchange`: gated FOK POST, dry-run, USDC ceiling, fill reconcile |
+| Orchestration | `src/arb/engine.py` | `run` (streaming/polling), `run_cycle`, `_hot_evaluate`, exchange selection |
+| HTTP API | `src/arb/control.py` | Dashboard / operator endpoints, `/streaming` + `/latency` |
 | Entry | `src/main.py` | Logging, engine + control tasks, signal shutdown |
 
 ---
@@ -120,9 +146,17 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 
 | Env var | Effect |
 |---------|--------|
+| `ARB_STREAMING_ENABLED` | `true` (default): WebSocket book stream + ms-latency hot path. `false`: legacy REST poll loop |
+| `CLOB_WS_URL` | Polymarket CLOB market WebSocket endpoint |
+| `ARB_UNIVERSE_REFRESH_SECONDS` | Streaming: cadence for Gamma universe refresh + resubscribe + full reconcile |
+| `ARB_BOOK_STALENESS_SECONDS` | Streamed books older than this are excluded from scans (never trade a frozen quote) |
+| `ARB_HOT_SCAN_DEBOUNCE_MS` | Coalesce a burst of book deltas for one event before re-scanning (0 = scan every delta) |
+| `ARB_MAX_BOOK_SUBSCRIPTIONS` / `ARB_WS_RECONNECT_MAX_SECONDS` | Subscription cap and reconnect backoff ceiling |
+| `ENABLE_LIVE_EXECUTION` / `LIVE_DRY_RUN` / `LIVE_MAX_ORDER_USDC` | Live execution gates: master switch, dry-run (build+log, don't POST), per-order USDC ceiling |
+| `CLOB_SIGNATURE_TYPE` | py-clob-client signature type (2 = proxy/email wallet) |
 | `GAMMA_BASE_URL` / `GAMMA_HTTP_TIMEOUT_SECONDS` | Gamma API endpoint and client timeout |
-| `CLOB_HOST` / `CLOB_BOOK_FETCH_CONCURRENCY` | CLOB endpoint and parallel book fetches |
-| `ARB_POLL_SECONDS` / `ARB_CYCLE_ERROR_BACKOFF_SECONDS` | Normal poll interval and pause after a failed cycle |
+| `CLOB_HOST` / `CLOB_BOOK_FETCH_CONCURRENCY` | CLOB endpoint and parallel REST book fetches (fallback/reconcile) |
+| `ARB_POLL_SECONDS` / `ARB_CYCLE_ERROR_BACKOFF_SECONDS` | Poll interval (polling mode) and pause after a failed cycle |
 | `MAX_TRACKED_EVENTS` | Hard cap on events after sort |
 | `MIN_EVENT_LIQUIDITY` / `MIN_OUTCOMES_PER_EVENT` | Universe floor |
 | `CATEGORY_ALLOWLIST` / `CATEGORY_BLOCKLIST` | Category gating |

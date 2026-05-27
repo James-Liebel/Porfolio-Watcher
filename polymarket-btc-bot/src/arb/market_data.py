@@ -30,17 +30,22 @@ class ClobMarketDataService:
     def __init__(self, config: Settings, client: Any | None = None) -> None:
         self._config = config
         self._client = client
+        self._stream: Any | None = None
         self._fetch_sem = asyncio.Semaphore(max(1, int(config.clob_book_fetch_concurrency)))
         if self._client is None and ClobClient is not None:
             try:
                 self._client = ClobClient(
                     host=self._config.clob_host,
                     chain_id=137,
-                    signature_type=2,
+                    signature_type=self._config.clob_signature_type,
                 )
             except Exception as exc:  # pragma: no cover
                 logger.warning("market_data.clob_unavailable", error=str(exc))
                 self._client = None
+
+    def attach_stream(self, stream: Any) -> None:
+        """Let refresh() serve books from the live WebSocket cache first."""
+        self._stream = stream
 
     async def refresh(self, events: list[ArbEvent]) -> dict[str, TokenBook]:
         markets: list[tuple[OutcomeMarket, str, str]] = []
@@ -50,30 +55,38 @@ class ClobMarketDataService:
                 markets.append((market, market.no_token_id, "NO"))
 
         books: dict[str, TokenBook] = {}
-        if self._client is None:
-            for market, token_id, contract_side in markets:
-                books[token_id] = self._synthetic_book(market, token_id, contract_side)
-            return books
 
-        async def _gated_fetch(
-            market: OutcomeMarket, token_id: str, contract_side: str
-        ) -> TokenBook | Exception:
-            async with self._fetch_sem:
-                try:
-                    return await self._fetch_book(market, token_id, contract_side)
-                except Exception as exc:
-                    return exc
+        # 1) Live stream cache (fresh books) — zero network, zero latency. This is
+        #    the steady-state source once the WebSocket is connected.
+        if self._stream is not None:
+            try:
+                books.update(self._stream.fresh_books([token_id for _, token_id, _ in markets]))
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("market_data.stream_read_error", error=str(exc))
 
-        tasks = [
-            _gated_fetch(market, token_id, contract_side)
-            for market, token_id, contract_side in markets
-        ]
-        for book in await asyncio.gather(*tasks):
-            if isinstance(book, Exception):
-                logger.warning("market_data.book_error", error=str(book))
-                continue
-            books[book.token_id] = book
+        pending = [(m, t, s) for (m, t, s) in markets if t not in books]
 
+        # 2) REST fallback for whatever the stream hasn't covered yet (warm start,
+        #    a just-added event, or a momentarily stale token).
+        if pending and self._client is not None:
+            async def _gated_fetch(
+                market: OutcomeMarket, token_id: str, contract_side: str
+            ) -> TokenBook | Exception:
+                async with self._fetch_sem:
+                    try:
+                        return await self._fetch_book(market, token_id, contract_side)
+                    except Exception as exc:
+                        return exc
+
+            tasks = [_gated_fetch(market, token_id, contract_side) for market, token_id, contract_side in pending]
+            for book in await asyncio.gather(*tasks):
+                if isinstance(book, Exception):
+                    logger.warning("market_data.book_error", error=str(book))
+                    continue
+                books[book.token_id] = book
+
+        # 3) Synthetic as a last resort so the scanner always has a (clearly
+        #    labelled, never-traded) book for every token.
         for market, token_id, contract_side in markets:
             if token_id not in books:
                 books[token_id] = self._synthetic_book(market, token_id, contract_side)

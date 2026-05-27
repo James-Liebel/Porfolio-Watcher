@@ -44,11 +44,22 @@ async def main() -> None:
     control_api = ArbControlAPI(config=config, engine=engine, legacy_db=legacy_db, repository=repository)
 
     await engine.initialize()
+    execution_mode = getattr(engine.exchange, "execution_mode", "paper")
+    if config.live_execution_armed():
+        log.warning(
+            "arb_bot.live_execution_armed",
+            note="REAL orders will be POSTed to Polymarket",
+            max_order_usdc=config.live_max_order_usdc,
+        )
     log.info(
         "arb_bot.started",
         paper_trade=config.paper_trade,
+        execution_mode=execution_mode,
+        streaming_enabled=config.arb_streaming_enabled,
+        clob_ws_url=config.clob_ws_url if config.arb_streaming_enabled else None,
         gamma_base_url=config.gamma_base_url,
         clob_host=config.clob_host,
+        universe_refresh_seconds=config.arb_universe_refresh_seconds,
         arb_poll_seconds=config.arb_poll_seconds,
         max_tracked_events=config.max_tracked_events,
     )

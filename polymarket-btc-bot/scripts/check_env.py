@@ -74,6 +74,30 @@ def main() -> int:
         else:
             print(f"[OK] {alias} set (API routes require token)")
 
+    print("")
+    print("Real-time streaming:")
+    print(f"[OK] ARB_STREAMING_ENABLED = {settings.arb_streaming_enabled!r}")
+    if settings.arb_streaming_enabled:
+        print(f"     CLOB_WS_URL = {settings.clob_ws_url}")
+        print(f"     ARB_UNIVERSE_REFRESH_SECONDS = {settings.arb_universe_refresh_seconds}")
+        print(f"     ARB_BOOK_STALENESS_SECONDS = {settings.arb_book_staleness_seconds}")
+    else:
+        print(f"     polling mode: ARB_POLL_SECONDS = {settings.arb_poll_seconds}")
+
+    print("")
+    print("Live execution gates (real money):")
+    print(f"     ENABLE_LIVE_EXECUTION = {settings.enable_live_execution!r}")
+    print(f"     LIVE_DRY_RUN = {settings.live_dry_run!r}")
+    print(f"     LIVE_MAX_ORDER_USDC = {settings.live_max_order_usdc!r}")
+    if settings.live_execution_armed():
+        print("[!!] LIVE EXECUTION ARMED - real Fill-or-Kill orders WILL be POSTed to Polymarket")
+    elif settings.live_execution_configured():
+        print("[OK] Live adapter configured in DRY-RUN - orders are built + logged, never POSTed")
+    elif (not settings.paper_trade) and settings.enable_live_execution:
+        print("[--] Live requested but credentials incomplete - running simulated PaperExchange")
+    else:
+        print("[--] Live execution OFF - simulated PaperExchange (safe default)")
+
     core = (
         ("GAMMA_BASE_URL", settings.gamma_base_url),
         ("CLOB_HOST", settings.clob_host),

@@ -623,6 +623,37 @@ async def test_arb_engine_add_funds_includes_new_bankroll_alias():
 
 
 @pytest.mark.anyio
+async def test_summary_reports_execution_mode_and_effective_gate():
+    """Front end keys off these: honest execution mode + the real edge gate."""
+    settings = _settings(
+        min_complete_set_edge_bps=25.0,
+        min_neg_risk_edge_bps=40.0,
+        arb_slippage_buffer_bps=15.0,
+    )
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=Database(path=path),
+            repository=ArbRepository(path=path),
+            universe=StaticUniverse([]),
+            market_data=StaticMarketData({}),
+        )
+        await engine.initialize()
+        s = engine.summary()
+
+        # Always "paper": the arb runtime has no live adapter, so the dashboard
+        # must not show LIVE even when PAPER_TRADE is false.
+        assert s["execution_mode"] == "paper"
+        assert s["slippage_buffer_bps"] == 15.0
+        assert s["effective_min_complete_set_edge_bps"] == 40.0
+        assert s["effective_min_neg_risk_edge_bps"] == 55.0
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.anyio
 async def test_arb_control_legacy_compat_routes():
     settings = _settings()
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:

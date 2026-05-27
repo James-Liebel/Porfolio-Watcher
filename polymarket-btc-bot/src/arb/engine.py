@@ -423,13 +423,22 @@ class ArbEngine:
 
     def summary(self) -> dict[str, Any]:
         payload = self._risk.summary(self._exchange, self._open_basket_count())
+        buffer_bps = self._config.arb_slippage_buffer_bps
         payload.update(
             {
                 "paper_trade": self._config.paper_trade,
+                # Reflects how fills are actually produced (always simulated until a
+                # live adapter exists), so the dashboard never mislabels the mode.
+                "execution_mode": getattr(self._exchange, "execution_mode", "paper"),
                 "tracked_events": len(self._active_event_ids),
                 "last_cycle_at": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
                 "last_cycle": dict(self._last_cycle_summary),
                 "latest_opportunities": len(self._opportunities),
+                # Effective eligibility gate = per-strategy floor + slippage buffer.
+                # Surfaced so the operator can see why opportunities are/aren't taken.
+                "slippage_buffer_bps": buffer_bps,
+                "effective_min_complete_set_edge_bps": self._config.min_complete_set_edge_bps + buffer_bps,
+                "effective_min_neg_risk_edge_bps": self._config.min_neg_risk_edge_bps + buffer_bps,
             }
         )
         return payload

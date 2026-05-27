@@ -28,6 +28,7 @@ async function poll() {
     const events = await fetchJSON("/events").catch(() => []);
 
     renderHeader(health, summary);
+    renderDataQuality(summary);
     renderStatCards(summary);
     renderEventsList(Array.isArray(events) ? events : []);
     renderBasketsTable(Array.isArray(baskets) ? baskets : []);
@@ -50,12 +51,19 @@ async function fetchJSON(path) {
 
 function renderHeader(health, summary) {
   const badge = document.getElementById("mode-badge");
-  if (health.paper_trade) {
-    badge.textContent = "PAPER";
-    badge.className = "badge badge-paper";
-  } else {
+  // Key the badge off how fills are actually produced, not the PAPER_TRADE flag.
+  // The arb engine has no live adapter, so execution_mode stays "paper" and the
+  // badge never claims LIVE while orders are in fact simulated.
+  const mode = String(summary.execution_mode || (health.paper_trade ? "paper" : "live")).toLowerCase();
+  if (mode === "live") {
     badge.textContent = "LIVE";
     badge.className = "badge badge-live";
+    badge.title = "Orders are sent to Polymarket.";
+  } else {
+    badge.textContent = "PAPER";
+    badge.className = "badge badge-paper";
+    badge.title =
+      "Execution is simulated by PaperExchange — no orders are sent to Polymarket, even if PAPER_TRADE=false (the arb runtime has no live adapter).";
   }
 
   const pill = document.getElementById("status-pill");
@@ -83,10 +91,54 @@ function setOfflineState() {
   label.textContent = "Bot offline";
   document.getElementById("bankroll").textContent = "—";
   document.getElementById("daily-pnl").textContent = "—";
+  const dq = document.getElementById("data-quality");
+  if (dq) {
+    dq.textContent = "";
+    dq.removeAttribute("title");
+  }
+}
+
+// Book-source health for the last cycle. Synthetic books are derived from Gamma
+// mids (not live CLOB depth) and are excluded from scanning, so any synthetic
+// count means live market coverage is incomplete and opportunities are scarcer
+// than a fully-live cycle would surface. This is the key "is it actionable in the
+// real market" signal, so it lives in the header.
+function renderDataQuality(summary) {
+  const el = document.getElementById("data-quality");
+  if (!el) return;
+  const lc = (summary && summary.last_cycle) || {};
+  const clob = Number(lc.books_clob || 0);
+  const synth = Number(lc.books_synthetic || 0);
+  const other = Number(lc.books_other || 0);
+  const total = clob + synth + other;
+
+  if (total === 0) {
+    el.textContent = "";
+    el.removeAttribute("title");
+    el.style.color = "";
+    return;
+  }
+  if (synth > 0) {
+    el.textContent = `⚠ ${synth}/${total} synthetic books`;
+    el.style.color = "#e5a23d";
+    el.title =
+      "Some order books are synthetic (Gamma mid-derived, not live CLOB). They are excluded from scanning, so live coverage is partial. Tune CLOB_BOOK_FETCH_CONCURRENCY / network stability.";
+  } else {
+    el.textContent = `✓ ${clob}/${total} live books`;
+    el.style.color = "var(--text-secondary, #8b8f9a)";
+    el.title = "All tracked order books came from the live CLOB this cycle.";
+  }
 }
 
 function renderStatCards(s) {
   setText("stat-trades", s.latest_opportunities ?? "—");
+  const oppEl = document.getElementById("stat-trades");
+  if (oppEl && s.effective_min_complete_set_edge_bps != null) {
+    oppEl.title =
+      `Eligibility gate: complete-set ≥ ${s.effective_min_complete_set_edge_bps} bps, ` +
+      `neg-risk ≥ ${s.effective_min_neg_risk_edge_bps} bps ` +
+      `(includes ${s.slippage_buffer_bps} bps slippage buffer).`;
+  }
   setText("stat-wins", s.executed_count ?? "—");
   setText("stat-losses", s.rejected_count ?? "—");
   const lc = s.last_cycle && s.last_cycle.opportunities != null ? s.last_cycle.opportunities : "—";

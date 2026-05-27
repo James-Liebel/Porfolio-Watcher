@@ -33,7 +33,7 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 - **Polling, not WebSockets:** The market moves continuously; you see discrete snapshots every `ARB_POLL_SECONDS`. Tighter poll = closer tracking; more load on APIs.
 - **Synthetic books:** If `ClobClient` fails to initialize or a token fetch errors, that token falls back to a **synthetic** book. Logs warn (`arb_engine.synthetic_books_in_cycle`). Tuning `CLOB_BOOK_FETCH_CONCURRENCY` and network stability reduces this gap.
 - **Paper-only economics:** `PAPER_TAKER_FEE_BPS`, `PAPER_MAKER_REBATE_BPS`, `PAPER_SPREAD_PENALTY_BPS` adjust simulated costs; align them with Polymarket for realistic P&L.
-- **No on-chain or authenticated trading:** Orders are not sent to Polymarket; inventory and cash live only in SQLite + in-memory exchange state.
+- **No on-chain or authenticated trading:** Orders are not sent to Polymarket; inventory and cash live only in SQLite + in-memory exchange state. There is **no live execution adapter** — `ArbEngine` always uses `PaperExchange`. `GET /summary` therefore reports **`execution_mode: "paper"`** independent of the `PAPER_TRADE` flag, and the dashboard badge keys off that field (not the flag) so it never shows "LIVE" while fills are simulated. `/summary` also surfaces `effective_min_complete_set_edge_bps` / `effective_min_neg_risk_edge_bps` (floor + buffer) and per-cycle `books_clob` / `books_synthetic` so the operator can see the real eligibility gate and live-data coverage.
 
 **Summary:** Paper mode **mirrors public market state in parallel** each cycle; it does **not** post to the market. To keep paper closest to reality: ensure CLOB books are live (watch synthetic warnings), tune fees/spread penalty, and set poll interval vs rate limits.
 

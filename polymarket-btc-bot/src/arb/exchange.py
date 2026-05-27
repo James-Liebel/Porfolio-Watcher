@@ -13,6 +13,12 @@ from .models import ArbEvent, FillRecord, OrderIntent, OrderRecord, PositionReco
 
 
 class PaperExchange:
+    # Identifies how fills are produced. The structural-arb runtime has no live
+    # adapter, so orders are always simulated here regardless of the PAPER_TRADE
+    # flag; the dashboard keys its badge off this, not the flag, to avoid claiming
+    # "LIVE" while nothing is actually sent to Polymarket.
+    execution_mode = "paper"
+
     def __init__(self, config: Settings) -> None:
         self._config = config
         self._books: dict[str, TokenBook] = {}

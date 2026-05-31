@@ -128,6 +128,16 @@ class Settings(BaseSettings):
     min_complete_set_edge_bps: float = Field(
         default=25.0, alias="MIN_COMPLETE_SET_EDGE_BPS"
     )
+    # A complete-set arb (buy YES on every outcome, redeem the set for $1) is only risk-free when the
+    # event's markets form a mutually-exclusive AND collectively-exhaustive partition — i.e. exactly one
+    # outcome resolves YES. On Polymarket that guarantee is carried by the negRisk / enableNegRisk flag
+    # (same CTF condition, redeemable as one set). For events without it, distinct grouped markets may be
+    # independent questions, so sum(YES) < $1 is a *phantom* arb: settlement can pay $0 (none win) or >$1
+    # (several win), not a guaranteed $1. Default True gates complete-set entry on that flag to protect
+    # capital. Set False only if you have an independent guarantee the universe is fully partitioned.
+    complete_set_require_mutual_exclusivity: bool = Field(
+        default=True, alias="COMPLETE_SET_REQUIRE_MUTUAL_EXCLUSIVITY"
+    )
     min_neg_risk_edge_bps: float = Field(
         default=40.0, alias="MIN_NEG_RISK_EDGE_BPS"
     )

@@ -54,6 +54,7 @@ def _complete_set_event() -> tuple[ArbEvent, dict[str, TokenBook]]:
     event = ArbEvent(
         event_id="event-1",
         title="Who wins?",
+        neg_risk=True,
         markets=[
             OutcomeMarket("event-1", "m1", "A?", "A", "y1", "n1", tick_size=0.01),
             OutcomeMarket("event-1", "m2", "B?", "B", "y2", "n2", tick_size=0.01),
@@ -727,6 +728,7 @@ def test_scanner_capital_required_matches_exchange_cash_for_complete_set():
     event = ArbEvent(
         event_id="e-depth",
         title="Depth test",
+        neg_risk=True,
         markets=[
             OutcomeMarket(
                 "e-depth", "m1", "?", "A", "y1", "n1", tick_size=0.01, fees_enabled=True
@@ -866,7 +868,9 @@ def test_cycle_diagnostics_reports_structural_counts_and_raw_edges():
     scanner = OpportunityScanner(_settings(min_complete_set_edge_bps=10_000.0, min_neg_risk_edge_bps=10_000.0))
     diag = scanner.cycle_diagnostics([event, nr_event], merged)
     assert diag["events_in_universe"] == 2
-    assert diag["neg_risk_tagged_events"] == 1
+    # Both fixtures are neg-risk events (a multi-outcome "Who wins?" market is neg-risk on Polymarket,
+    # and complete-set redemption is only risk-free on such mutually-exclusive partitions).
+    assert diag["neg_risk_tagged_events"] == 2
     assert diag["complete_set_priceable_events"] >= 1
     assert diag["max_raw_complete_set_edge_bps"] is not None
     assert diag["complete_set_best_edge_meets_floor"] is False

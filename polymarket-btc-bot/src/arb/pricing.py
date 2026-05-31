@@ -321,9 +321,23 @@ class OpportunityScanner:
             yes_templates=yes_templates,
         )
 
+    def _complete_set_event_eligible(self, event: ArbEvent) -> bool:
+        """A complete set redeems for exactly $1 only when the event is a mutually-exclusive,
+        collectively-exhaustive partition (exactly one outcome resolves YES). On Polymarket that
+        guarantee is the negRisk / enableNegRisk flag (one CTF condition, redeemable as a set).
+        Without it, grouped markets may be independent questions — buying all YES is not risk-free.
+        """
+        if not getattr(self._config, "complete_set_require_mutual_exclusivity", True):
+            return True
+        if event.neg_risk_augmented:
+            return False
+        return bool(event.neg_risk or event.enable_neg_risk)
+
     def _complete_set_opportunities(
         self, event: ArbEvent, books: dict[str, TokenBook], max_basket_notional: float
     ) -> list[ArbOpportunity]:
+        if not self._complete_set_event_eligible(event):
+            return []
         w = self._complete_set_work(event, books, max_basket_notional)
         if w is None:
             return []

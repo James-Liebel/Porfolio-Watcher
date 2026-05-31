@@ -91,6 +91,7 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 
 **Complete-set (`strategy_type=complete_set`)**
 
+- **Mutual-exclusivity gate (correctness):** A complete set redeems for exactly $1 only when the event's markets form a mutually-exclusive **and** collectively-exhaustive partition (exactly one outcome resolves YES). Polymarket guarantees this with the **`negRisk` / `enableNegRisk`** flag (same CTF condition, redeemable as one set). By default (**`COMPLETE_SET_REQUIRE_MUTUAL_EXCLUSIVITY=true`**) complete-set opportunities are only emitted for such events; without the flag, distinct grouped markets may be independent questions, so `sum(YES) < $1` is a **phantom arb** (settlement can pay $0 or >$1, not a guaranteed $1). Set the flag false only if you have an independent guarantee the universe is fully partitioned.
 - Requires **distinct normalized outcome names** for every market in the event.
 - Buys **YES** on each outcome at **best ask** (taker path), sizes with **`MAX_BASKET_NOTIONAL`**, checks **`MIN_COMPLETE_SET_EDGE_BPS`** and positive profit.
 - Ranked by annualized edge (with time-to-expiry) among candidates; list truncated before risk (`max_opportunities_per_cycle * 10` cap in scanner).
@@ -127,6 +128,7 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 | `MIN_EVENT_LIQUIDITY` / `MIN_OUTCOMES_PER_EVENT` | Universe floor |
 | `CATEGORY_ALLOWLIST` / `CATEGORY_BLOCKLIST` | Category gating |
 | `MIN_COMPLETE_SET_EDGE_BPS` / `MIN_NEG_RISK_EDGE_BPS` | Scanner floors |
+| `COMPLETE_SET_REQUIRE_MUTUAL_EXCLUSIVITY` | Gate complete-set entry on neg-risk-flagged (exclusive+exhaustive) events; default true |
 | `MAX_BASKET_NOTIONAL`, `MAX_TOTAL_OPEN_BASKETS`, `MAX_BASKETS_PER_STRATEGY`, `MAX_OPPORTUNITIES_PER_CYCLE` | Size and concurrency limits |
 | `MAX_EVENT_EXPOSURE_PCT`, `OPPORTUNITY_COOLDOWN_SECONDS` | Risk (exposure vs max(equity, contributed)) |
 | `MAX_ARB_LEG_SPREAD_BPS`, `ARB_MIN_EXPECTED_PROFIT_USD` | Skip wide books / dust arbs (0 disables each) |

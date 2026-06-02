@@ -443,6 +443,73 @@ async def test_engine_auto_settles_when_event_leaves_active_universe():
 
 
 @pytest.mark.anyio
+async def test_failure_unwind_only_touches_failed_basket_legs():
+    """A failed basket's unwind must not liquidate a prior basket's held positions on the same event.
+
+    Positions merge by token across baskets; reversing 'all event positions' would cross the spread
+    on a good, locked basket. The unwind must reverse only the failed basket's own BUY fills.
+    """
+    event, books = _complete_set_event()
+    _set_book_source(books, "clob")
+    settings = _settings()
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as handle:
+        path = handle.name
+    try:
+        legacy_db = Database(path=path)
+        repository = ArbRepository(path=path)
+        await legacy_db.init()
+        await repository.init()
+        engine = ArbEngine(
+            config=settings,
+            legacy_db=legacy_db,
+            repository=repository,
+            universe=StaticUniverse([event]),
+            market_data=StaticMarketData(books),
+        )
+        ex = engine.exchange
+        ex.update_universe([event])
+        ex.sync_books(books)
+
+        def _buy(basket_id, token_id, market_id, size):
+            intent = OrderIntent(
+                basket_id=basket_id,
+                opportunity_id="opp",
+                token_id=token_id,
+                market_id=market_id,
+                event_id=event.event_id,
+                contract_side="YES",
+                side="BUY",
+                price=1.0,  # generous limit; walks the single ask level
+                size=size,
+                order_type="fok",
+                maker_or_taker="taker",
+                fees_enabled=False,
+                metadata={},
+            )
+            order, _ = ex.place_order(intent)
+            assert order.status == "filled", order.reason
+
+        # Prior, good basket holds all three YES legs (held to settlement).
+        _buy("basket-prior", "y1", "m1", 5.0)
+        _buy("basket-prior", "y2", "m2", 5.0)
+        _buy("basket-prior", "y3", "m3", 5.0)
+        # Failed basket only managed to fill one leg before another leg failed.
+        _buy("basket-failed", "y1", "m1", 5.0)
+
+        positions = {p.token_id: p.size for p in ex.get_positions()}
+        assert positions == {"y1": 10.0, "y2": 5.0, "y3": 5.0}
+
+        await engine._liquidate_event_positions(event.event_id, "basket-failed", "opp")
+
+        after = {p.token_id: p.size for p in ex.get_positions()}
+        # Only the failed basket's y1 leg (5) is unwound; the prior basket is untouched.
+        assert after == {"y1": 5.0, "y2": 5.0, "y3": 5.0}
+    finally:
+        os.unlink(path)
+
+
+@pytest.mark.anyio
 async def test_engine_rejects_invalid_settlement_market():
     event, books = _complete_set_event()
     _set_book_source(books, "clob")

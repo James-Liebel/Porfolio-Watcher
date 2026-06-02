@@ -163,6 +163,23 @@ Each poll (every `ARB_POLL_SECONDS`, plus optional backoff after errors):
 
 ---
 
-## 9. Changing this document
+## 9. Going live — readiness gate
+
+Real-money execution (`ARB_LIVE_EXECUTION=true`, which also needs `PAPER_TRADE=false` and `ALLOW_TAKER_EXECUTION=true`) is blocked at engine startup by a **live-readiness gate** (`ArbEngine._enforce_live_readiness_gate`, logic in `src/arb/live_readiness.py`) that operationalizes the blueprint's §14 acceptance criteria from the **paper basket history**:
+
+- **Resolved trade units** ≥ `ARB_READINESS_MIN_RESOLVED_BASKETS` (default 200) — settled/converted baskets.
+- **Basket completion rate** ≥ `ARB_READINESS_MIN_COMPLETION_RATE` (default 0.99) — fraction of attempted baskets that built all legs without a `FAILED` unwind (in-flight `EXECUTING` baskets excluded). A half-built basket is naked directional risk, not an arb, so this is the key live-safety metric.
+- **Net realized PnL** > 0 and ≥ `ARB_READINESS_MIN_NET_PNL_USD` (default 0) after modeled fees/slippage.
+
+The gate reads basket rows from `ARB_READINESS_PROOF_DB` (point it at your paper DB, e.g. `data/paper_arb.db`; empty = the engine's own DB). Certify any time without starting the engine:
+
+```
+python scripts/check_live_readiness.py --db data/paper_arb.db          # exit 0 = ready, 1 = not ready
+python scripts/check_live_readiness.py --db data/paper_arb.db --json
+```
+
+Controls: `ARB_REQUIRE_LIVE_READINESS_PROOF=false` disables the gate entirely (not recommended); `ARB_ALLOW_LIVE_WITHOUT_READINESS_PROOF=true` is an explicit, logged override for a supervised tiny-size pilot. Recommended first live config: `MAX_BASKET_NOTIONAL` of a few dollars and `MAX_TOTAL_OPEN_BASKETS=1` while you watch.
+
+## 10. Changing this document
 
 When you change behavior in code, update the relevant **section and table** here so future tuning stays one jump away from the implementation.

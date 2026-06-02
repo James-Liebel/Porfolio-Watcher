@@ -124,6 +124,7 @@ class ArbEngine:
                     paper_spread_penalty_bps=self._config.paper_spread_penalty_bps,
                     note="Complete-set scanner edges include this penalty; use PAPER_SPREAD_PENALTY_BPS=0 for live.",
                 )
+            await self._enforce_live_readiness_gate()
         await self._legacy_db.init()
         await self._repository.init()
         await self._risk.hydrate_from_db(self._legacy_db, self._exchange)
@@ -160,6 +161,69 @@ class ArbEngine:
         await self._persist_runtime_state()
         self._risk.capture_session_baseline(self._exchange)
         self._initialized = True
+
+    async def _enforce_live_readiness_gate(self) -> None:
+        """Block live execution until the paper track record meets the §14 acceptance criteria.
+
+        Reads basket history from the configured proof DB (or this engine's own DB) and refuses to
+        start live unless the strategy is proven profitable-after-costs with reliable basket
+        completion. An explicit, logged override exists for supervised tiny-size pilots.
+        """
+        from .live_readiness import (
+            ReadinessThresholds,
+            evaluate_live_readiness,
+            format_report,
+        )
+
+        if not self._config.arb_require_live_readiness_proof:
+            logger.warning(
+                "arb_engine.live_readiness_check_disabled",
+                note="ARB_REQUIRE_LIVE_READINESS_PROOF=false — starting live without paper proof.",
+            )
+            return
+
+        proof_path = (self._config.arb_readiness_proof_db or "").strip()
+        if proof_path:
+            proof_repo = ArbRepository(path=proof_path)
+        else:
+            proof_repo = self._repository
+        await proof_repo.init()
+        rows = await proof_repo.list_baskets(limit=1_000_000)
+
+        thresholds = ReadinessThresholds(
+            min_resolved_baskets=int(self._config.arb_readiness_min_resolved_baskets),
+            min_completion_rate=float(self._config.arb_readiness_min_completion_rate),
+            min_net_pnl_usd=float(self._config.arb_readiness_min_net_pnl_usd),
+            require_positive_net_pnl=True,
+        )
+        report = evaluate_live_readiness(rows, thresholds)
+        logger.info(
+            "arb_engine.live_readiness_evaluated",
+            proof_db=proof_repo._path,
+            **report.summary(),
+        )
+
+        if report.ready:
+            logger.info("arb_engine.live_readiness_passed", proof_db=proof_repo._path)
+            return
+
+        reasons = "; ".join(report.failure_reasons())
+        if self._config.arb_allow_live_without_readiness_proof:
+            logger.warning(
+                "arb_engine.live_readiness_overridden",
+                proof_db=proof_repo._path,
+                unmet=reasons,
+                note="ARB_ALLOW_LIVE_WITHOUT_READINESS_PROOF=true — proceeding live DESPITE unmet criteria.",
+            )
+            return
+
+        raise ValueError(
+            "Live execution blocked by readiness gate (NEG_RISK_ARB_BLUEPRINT.md section 14).\n"
+            + format_report(report)
+            + f"\nProof DB: {proof_repo._path}"
+            + "\nRun paper longer, point ARB_READINESS_PROOF_DB at your paper DB, "
+            "or set ARB_ALLOW_LIVE_WITHOUT_READINESS_PROOF=true for a supervised pilot."
+        )
 
     async def _reconcile_nominal_contributed_capital(self) -> None:
         """Set `contributed_capital` from config + deposits table — not stale `arb_runtime_state`.
@@ -813,17 +877,43 @@ class ArbEngine:
                 raise RuntimeError(f"converted YES leg did not fill for {leg.token_id}")
 
     async def _liquidate_event_positions(self, event_id: str, basket_id: str, opportunity_id: str) -> None:
-        for position in list(self._exchange.get_positions()):
-            if position.event_id != event_id:
+        """Unwind ONLY the fills this failed basket itself acquired.
+
+        Positions merge by token across baskets, so a prior complete-set basket holding legs to
+        settlement on the same event shares token ids with a newly-failed basket. Selling all event
+        positions would wrongly liquidate that good basket's holdings (crossing the spread and
+        destroying a locked arb). Reverse only this basket's own BUY fills, clamped to inventory.
+        """
+        # Aggregate this basket's filled BUY size per token (partials may span multiple orders).
+        bought: dict[str, dict[str, Any]] = {}
+        for order in self._exchange.all_orders():
+            if order.basket_id != basket_id or order.side != "BUY":
                 continue
-            book = self._exchange.book_for_token(position.token_id)
+            filled = float(order.filled_size or 0.0)
+            if filled <= 1e-12:
+                continue
+            rec = bought.setdefault(
+                order.token_id,
+                {"size": 0.0, "market_id": order.market_id, "contract_side": order.contract_side},
+            )
+            rec["size"] = float(rec["size"]) + filled
+
+        positions_by_token = {p.token_id: p for p in self._exchange.get_positions()}
+        for token_id, rec in bought.items():
+            position = positions_by_token.get(token_id)
+            available = float(position.size) if position is not None else 0.0
+            # Never sell more than this basket bought, nor more than current inventory.
+            unwind_size = min(float(rec["size"]), available)
+            if unwind_size <= 1e-9:
+                continue
+            book = self._exchange.book_for_token(token_id)
             if book is None or book.best_bid <= 0:
                 logger.warning(
                     "arb_engine.unwind_position_abandoned",
-                    token_id=position.token_id,
+                    token_id=token_id,
                     event_id=event_id,
-                    size=round(position.size, 6),
-                    avg_price=round(position.avg_price, 6),
+                    basket_id=basket_id,
+                    size=round(unwind_size, 6),
                     reason="no_bid_for_unwind",
                     note="Position remains in ledger — manually settle via POST /settle to clear exposure.",
                 )
@@ -831,13 +921,13 @@ class ArbEngine:
             intent = OrderIntent(
                 basket_id=basket_id,
                 opportunity_id=opportunity_id,
-                token_id=position.token_id,
-                market_id=position.market_id,
+                token_id=token_id,
+                market_id=str(rec["market_id"]),
                 event_id=event_id,
-                contract_side=position.contract_side,
+                contract_side=rec["contract_side"],
                 side="SELL",
                 price=book.best_bid,
-                size=position.size,
+                size=unwind_size,
                 order_type="fak",
                 maker_or_taker="taker",
                 fees_enabled=book.fees_enabled,

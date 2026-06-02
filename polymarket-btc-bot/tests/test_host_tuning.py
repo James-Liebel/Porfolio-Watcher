@@ -7,7 +7,8 @@ from src.arb.host_tuning import structural_bot_env_from_cpu
 def test_structural_bot_env_bounds() -> None:
     for mode in ("live", "paper"):
         d = structural_bot_env_from_cpu(mode)  # type: ignore[arg-type]
-        assert 9 <= int(d["ARB_POLL_SECONDS"]) <= 22
+        # Faster machines poll more aggressively (be-first-to-the-trade); code range is [5, 11].
+        assert 5 <= int(d["ARB_POLL_SECONDS"]) <= 22
         assert int(d["CLOB_BOOK_FETCH_CONCURRENCY"]) >= 10
         assert int(d["MAX_TRACKED_EVENTS"]) >= 400
         assert int(d["MAX_OPPORTUNITIES_PER_CYCLE"]) >= 6

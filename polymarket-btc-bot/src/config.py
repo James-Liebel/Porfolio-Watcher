@@ -547,6 +547,29 @@ class Settings(BaseSettings):
     paper_trade: bool = Field(default=True, alias="PAPER_TRADE")
     # Structural arb: real CLOB orders via LiveClobExchange (requires PAPER_TRADE=false, taker FOK).
     arb_live_execution: bool = Field(default=False, alias="ARB_LIVE_EXECUTION")
+    # ── Live-readiness gate (NEG_RISK_ARB_BLUEPRINT.md §14) ──────────────
+    # When true, going live (ARB_LIVE_EXECUTION) is blocked until the paper track record proves the
+    # strategy is profitable after fees/slippage and that baskets complete reliably. See
+    # src/arb/live_readiness.py and scripts/check_live_readiness.py.
+    arb_require_live_readiness_proof: bool = Field(
+        default=True, alias="ARB_REQUIRE_LIVE_READINESS_PROOF"
+    )
+    # Explicit, logged override to start live without meeting the gate (e.g. supervised tiny-size pilot).
+    arb_allow_live_without_readiness_proof: bool = Field(
+        default=False, alias="ARB_ALLOW_LIVE_WITHOUT_READINESS_PROOF"
+    )
+    # Path to the paper-proof SQLite DB the gate reads basket history from. Empty = use the engine's
+    # own DB (only meaningful if that DB already holds paper baskets).
+    arb_readiness_proof_db: str = Field(default="", alias="ARB_READINESS_PROOF_DB")
+    arb_readiness_min_resolved_baskets: int = Field(
+        default=200, alias="ARB_READINESS_MIN_RESOLVED_BASKETS"
+    )
+    arb_readiness_min_completion_rate: float = Field(
+        default=0.99, alias="ARB_READINESS_MIN_COMPLETION_RATE"
+    )
+    arb_readiness_min_net_pnl_usd: float = Field(
+        default=0.0, alias="ARB_READINESS_MIN_NET_PNL_USD"
+    )
     paper_equity_snapshot_log: bool = Field(
         default=True,
         alias="PAPER_EQUITY_SNAPSHOT_LOG",

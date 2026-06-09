@@ -153,16 +153,23 @@ class GammaUniverseService:
         page_size: int,
         max_pages: int,
     ) -> list[dict[str, Any]]:
-        """GET Gamma list endpoints with offset pagination; dedupe by row id."""
+        """GET Gamma list endpoints with offset pagination; dedupe by row id.
+
+        Gamma caps a single page well below large requested limits (typically 100 rows),
+        so we must advance ``offset`` by the number of rows the server actually returned
+        rather than by ``page_size``. Stop only on an empty page or when a page adds no new
+        unique rows; ``max_pages`` is the safety bound.
+        """
         merged: list[dict[str, Any]] = []
         seen: set[str] = set()
         url = f"{self._config.gamma_base_url}{path}"
         pages_fetched = 0
+        offset = 0
         for page in range(max_pages):
             params = {
                 **base_params,
                 "limit": str(page_size),
-                "offset": str(page * page_size),
+                "offset": str(offset),
             }
             async with self._session.get(url, params=params) as resp:
                 if resp.status >= 400:
@@ -171,18 +178,24 @@ class GammaUniverseService:
                         path=path,
                         status=resp.status,
                         page=page,
+                        offset=offset,
                     )
                     break
                 chunk = await resp.json()
             pages_fetched += 1
             if not isinstance(chunk, list) or not chunk:
                 break
+            new_in_page = 0
             for row in chunk:
                 rid = str(row.get("id") or row.get("conditionId") or "")
                 if rid and rid not in seen:
                     seen.add(rid)
                     merged.append(row)
-            if len(chunk) < page_size:
+                    new_in_page += 1
+            # Advance by what the server actually returned (it may cap below page_size).
+            offset += len(chunk)
+            # End of results: a page with no rows we haven't already seen.
+            if new_in_page == 0:
                 break
         logger.debug(
             "universe.gamma_pages",

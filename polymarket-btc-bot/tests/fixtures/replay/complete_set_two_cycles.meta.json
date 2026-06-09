@@ -65,6 +65,7 @@
     "arb_adaptive_event_target_cycle_seconds": 90.0,
     "max_arb_leg_spread_bps": 0.0,
     "arb_min_expected_profit_usd": 0.0,
+    "arb_max_plausible_edge_bps": 0.0,
     "arb_halt_execution_if_synthetic_books_ge": 0,
     "arb_trailing_equity_drawdown_pct": 0.0,
     "arb_session_realized_loss_usd": 0.0,

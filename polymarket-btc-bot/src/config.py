@@ -224,6 +224,22 @@ class Settings(BaseSettings):
         default=0.25,
         alias="ARB_MIN_EXPECTED_PROFIT_USD",
     )
+    # 0 = disabled. Reject opportunities whose net edge exceeds this many bps as "too good to be true".
+    # A genuine structural arb is small (tens of bps); a 10%+ "risk-free" edge almost always reflects a
+    # stale or razor-thin best-quote on an illiquid market that vanishes before a taker order can fill
+    # (the dominant cause of historical FAILED baskets). Default 1000 bps (10%).
+    arb_max_plausible_edge_bps: float = Field(
+        default=1000.0,
+        alias="ARB_MAX_PLAUSIBLE_EDGE_BPS",
+    )
+    # 0 = disabled (default). Require each structural leg to show at least this much resting notional (USD)
+    # at the price we intend to take (best ask for BUY legs, best bid for SELL legs). Filters phantom edges
+    # anchored on a dust quote that cannot absorb the basket. Opt-in; the plausible-edge ceiling above is
+    # the primary phantom-arb guard.
+    arb_min_leg_touch_notional_usd: float = Field(
+        default=0.0,
+        alias="ARB_MIN_LEG_TOUCH_NOTIONAL_USD",
+    )
     # 0 = disabled. If a cycle has this many synthetic books, skip new executions (opportunities still logged as rejected).
     arb_halt_execution_if_synthetic_books_ge: int = Field(
         default=6,
@@ -254,6 +270,20 @@ class Settings(BaseSettings):
     arb_summary_clob_stale_seconds: float = Field(
         default=5.0,
         alias="ARB_SUMMARY_CLOB_STALE_SECONDS",
+    )
+    # 0 = no bound (unsafe). Max seconds any single synchronous CLOB API call (run in a worker thread)
+    # may take before the cycle gives up on it. py-clob-client uses `requests` with no default timeout,
+    # so a stalled connection would otherwise block the cycle forever (the worker thread never returns).
+    arb_clob_api_timeout_seconds: float = Field(
+        default=30.0,
+        alias="ARB_CLOB_API_TIMEOUT_SECONDS",
+    )
+    # 0 = use the full Gamma HTTP timeout. Per-event budget (seconds) for the auto-settle resolution
+    # lookup. Auto-settle iterates every event tied to a held position/open basket and queries Gamma
+    # sequentially; without a tight per-event bound a few slow/stale event lookups stall the whole cycle.
+    arb_resolution_lookup_timeout_seconds: float = Field(
+        default=15.0,
+        alias="ARB_RESOLUTION_LOOKUP_TIMEOUT_SECONDS",
     )
     allow_taker_execution: bool = Field(
         default=True, alias="ALLOW_TAKER_EXECUTION"

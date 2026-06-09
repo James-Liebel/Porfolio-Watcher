@@ -449,28 +449,45 @@ class ArbRepository:
                     )
             await db.commit()
 
-    async def record_book(self, book: TokenBook) -> None:
-        async with _connect(self._path) as db:
-            await db.execute(
-                """
+    _RECORD_BOOK_SQL = """
                 INSERT INTO arb_books (
                     token_id, timestamp, best_bid, best_ask, mid, spread,
                     fees_enabled, tick_size, source, depth_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    book.token_id,
-                    book.timestamp.isoformat(),
-                    float(book.best_bid),
-                    float(book.best_ask),
-                    float(book.mid),
-                    float(book.spread),
-                    1 if book.fees_enabled else 0,
-                    float(book.tick_size),
-                    book.source,
-                    json.dumps(book.as_dict(), default=str),
-                ),
-            )
+                """
+
+    @staticmethod
+    def _book_row(book: TokenBook) -> tuple:
+        return (
+            book.token_id,
+            book.timestamp.isoformat(),
+            float(book.best_bid),
+            float(book.best_ask),
+            float(book.mid),
+            float(book.spread),
+            1 if book.fees_enabled else 0,
+            float(book.tick_size),
+            book.source,
+            json.dumps(book.as_dict(), default=str),
+        )
+
+    async def record_book(self, book: TokenBook) -> None:
+        async with _connect(self._path) as db:
+            await db.execute(self._RECORD_BOOK_SQL, self._book_row(book))
+            await db.commit()
+
+    async def record_books_batch(self, books: list[TokenBook]) -> None:
+        """Persist many book snapshots in a single connection/transaction.
+
+        record_book() connects and commits per call, which means one fsync per book. With a large
+        universe (hundreds of books per cycle) that serializes into minutes of disk I/O and stalls the
+        whole cycle. Batching collapses it to a single executemany + commit.
+        """
+        if not books:
+            return
+        rows = [self._book_row(book) for book in books]
+        async with _connect(self._path) as db:
+            await db.executemany(self._RECORD_BOOK_SQL, rows)
             await db.commit()
 
     async def record_opportunity(self, opportunity: ArbOpportunity, decision: str | None = None, reason: str = "") -> None:

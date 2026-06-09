@@ -66,6 +66,25 @@ def _books_within_spread_cap(books: list[TokenBook], max_spread_bps: float) -> b
     return True
 
 
+def _touch_notional(book: TokenBook, action: str) -> float:
+    """Resting USD notional at the price we'd take: best ask for BUY, best bid for SELL."""
+    if action == "BUY":
+        return book.best_ask * book.available_to_buy(book.best_ask)
+    return book.best_bid * book.available_to_sell(book.best_bid)
+
+
+def _legs_meet_touch_notional(
+    specs: list[tuple[TokenBook, str]], min_touch_notional_usd: float
+) -> bool:
+    """Every (book, action) leg must show >= min resting notional at the touch (0 = disabled)."""
+    if min_touch_notional_usd <= 0:
+        return True
+    for book, action in specs:
+        if _touch_notional(book, action) + 1e-9 < min_touch_notional_usd:
+            return False
+    return True
+
+
 def _complete_set_buy_cash_out(
     legs_spec: list[tuple[TokenBook, float, bool]], size: float, config: Settings
 ) -> tuple[bool, float]:
@@ -301,6 +320,11 @@ class OpportunityScanner:
         leg_books = [b for b, _, _ in legs_spec]
         if not _books_within_spread_cap(leg_books, float(self._config.max_arb_leg_spread_bps)):
             return None
+        if not _legs_meet_touch_notional(
+            [(b, "BUY") for b in leg_books],
+            float(getattr(self._config, "arb_min_leg_touch_notional_usd", 0.0)),
+        ):
+            return None
 
         size, cash_out = _max_size_under_notional_complete_set(
             legs_spec, max_basket_notional, self._config
@@ -342,6 +366,11 @@ class OpportunityScanner:
         if w is None:
             return []
         if w.net_edge_bps < self._config.min_complete_set_edge_bps or w.profit <= 0:
+            return []
+        max_edge = float(getattr(self._config, "arb_max_plausible_edge_bps", 0.0))
+        if max_edge > 0 and w.net_edge_bps > max_edge:
+            # "Too good to be true": almost always a stale/dust top-of-book on an illiquid market
+            # that will not fill at this price. Skip rather than chase a phantom basket.
             return []
         min_p = float(self._config.arb_min_expected_profit_usd)
         if min_p > 0 and w.profit < min_p - 1e-12:
@@ -437,6 +466,11 @@ class OpportunityScanner:
         spread_books = [no_book] + [book for book, _, _ in sell_specs]
         if not _books_within_spread_cap(spread_books, float(self._config.max_arb_leg_spread_bps)):
             return None
+        if not _legs_meet_touch_notional(
+            [(no_book, "BUY")] + [(book, "SELL") for book, _, _ in sell_specs],
+            float(getattr(self._config, "arb_min_leg_touch_notional_usd", 0.0)),
+        ):
+            return None
 
         size, buy_cost, sell_in, profit = _max_size_neg_risk_under_notional(
             no_book,
@@ -509,6 +543,9 @@ class OpportunityScanner:
             if opp is None:
                 continue
             if opp.net_edge_bps < self._config.min_neg_risk_edge_bps or opp.expected_profit <= 0:
+                continue
+            max_edge = float(getattr(self._config, "arb_max_plausible_edge_bps", 0.0))
+            if max_edge > 0 and opp.net_edge_bps > max_edge:
                 continue
             min_p = float(self._config.arb_min_expected_profit_usd)
             if min_p > 0 and opp.expected_profit < min_p - 1e-12:

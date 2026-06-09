@@ -235,6 +235,23 @@ class ArbEngine:
         nominal = float(self._config.initial_bankroll) + float(total_dep)
         self._exchange.contributed_capital = nominal
 
+    async def _run_clob_op(self, fn: Any, label: str) -> Any:
+        """Run a blocking py-clob-client call in a worker thread with a hard timeout.
+
+        py-clob-client uses `requests` with no default timeout, so a stalled connection would block
+        the worker thread (and the awaiting cycle) indefinitely. asyncio.wait_for bounds the cycle's
+        wait; on timeout we log and move on (the orphaned thread unblocks on its own socket error).
+        """
+        timeout = float(self._config.arb_clob_api_timeout_seconds)
+        coro = asyncio.to_thread(fn)
+        if timeout <= 0:
+            return await coro
+        try:
+            return await asyncio.wait_for(coro, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("arb_engine.clob_op_timeout", op=label, timeout_seconds=timeout)
+            return None
+
     async def _maybe_sync_clob_collateral(self) -> None:
         """Live: refresh ledger cash from CLOB collateral API (deposits / redeems on Polymarket.com)."""
         if self._config.paper_trade or not self._config.arb_sync_clob_collateral_each_cycle:
@@ -246,7 +263,9 @@ class ArbEngine:
         if not isinstance(self._exchange, LiveClobExchange):
             return
         try:
-            await asyncio.to_thread(self._exchange.sync_cash_from_clob_collateral)
+            await self._run_clob_op(
+                self._exchange.sync_cash_from_clob_collateral, "sync_cash_from_clob_collateral"
+            )
         except Exception as exc:
             logger.warning("arb_engine.clob_collateral_sync_failed", error=str(exc))
 
@@ -259,7 +278,9 @@ class ArbEngine:
         if not isinstance(self._exchange, LiveClobExchange):
             return
         try:
-            await asyncio.to_thread(self._exchange.sync_positions_from_clob_trades)
+            await self._run_clob_op(
+                self._exchange.sync_positions_from_clob_trades, "sync_positions_from_clob_trades"
+            )
         except Exception as exc:
             logger.warning("arb_engine.live_positions_sync_failed", error=str(exc))
 
@@ -282,7 +303,9 @@ class ArbEngine:
         if last > 0 and (now - last) < stale_sec:
             return
         try:
-            await asyncio.to_thread(ex.sync_cash_from_clob_collateral)
+            await self._run_clob_op(
+                ex.sync_cash_from_clob_collateral, "summary_clob_refresh"
+            )
         except Exception as exc:
             logger.warning("arb_engine.summary_clob_refresh_failed", error=str(exc))
 
@@ -397,8 +420,7 @@ class ArbEngine:
                     total=len(books),
                 )
             self._exchange.sync_books(books)
-            for book in books.values():
-                await self._repository.record_book(book)
+            await self._repository.record_books_batch(list(books.values()))
 
             auto_settled = await self._auto_settle_resolved_events_locked()
             complete_set_unwound = await self._maybe_unwind_complete_set_baskets()
@@ -1636,11 +1658,22 @@ class ArbEngine:
             # Do not skip while the event is still in the refreshed universe: Gamma often keeps
             # resolved events in the active list briefly, and we only iterate events we hold.
             known_event = self._events.get(event_id)
+            lookup_timeout = float(self._config.arb_resolution_lookup_timeout_seconds)
             try:
-                resolved_event, resolution_market_id, source = await lookup_resolution(
-                    event_id,
-                    fallback_event=known_event,
+                lookup_coro = lookup_resolution(event_id, fallback_event=known_event)
+                if lookup_timeout > 0:
+                    resolved_event, resolution_market_id, source = await asyncio.wait_for(
+                        lookup_coro, timeout=lookup_timeout
+                    )
+                else:
+                    resolved_event, resolution_market_id, source = await lookup_coro
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "arb_engine.auto_settle_lookup_timeout",
+                    event_id=event_id,
+                    timeout_seconds=lookup_timeout,
                 )
+                continue
             except Exception as exc:
                 logger.warning("arb_engine.auto_settle_lookup_failed", event_id=event_id, error=str(exc))
                 continue

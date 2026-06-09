@@ -45,6 +45,9 @@ def _settings(**overrides) -> Settings:
         arb_min_expected_profit_usd=0.0,
         arb_consecutive_execution_failures_halt=0,
         paper_spread_penalty_bps=0.0,
+        # Idealized fixtures intentionally use large edges to test detection/sizing math; disable the
+        # production "too good to be true" ceiling here so those tests exercise the core logic.
+        arb_max_plausible_edge_bps=0.0,
     )
     defaults.update(overrides)
     return Settings(_env_file=None, **defaults)
@@ -849,6 +852,7 @@ def test_scanner_capital_required_matches_exchange_cash_for_complete_set():
         arb_poll_seconds=1,
         max_tracked_events=100,
         max_arb_leg_spread_bps=0.0,
+        arb_max_plausible_edge_bps=0.0,
     )
     complete = [o for o in OpportunityScanner(cfg).scan([event], books) if o.strategy_type == "complete_set"]
     assert len(complete) == 1

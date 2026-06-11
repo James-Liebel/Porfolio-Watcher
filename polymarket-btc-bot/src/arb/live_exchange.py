@@ -276,6 +276,17 @@ class LiveClobExchange(PaperExchange):
         )
         return len(rebuilt)
 
+    def _safe_address_for_conversion(self) -> str | None:
+        """Safe address to relay on-chain conversion through, or None for a direct EOA wallet.
+
+        signature_type=2 means Polymarket holds outcome tokens in a Gnosis Safe; convertPositions must
+        be sent FROM the Safe via execTransaction (signed by the EOA owner). For EOA wallets (type 0)
+        the EOA holds the tokens and signs directly, so no Safe relay is needed.
+        """
+        if int(self._config.clob_signature_type or 0) == 2:
+            return (self._config.polymarket_wallet_address or "").strip() or None
+        return None
+
     def _ensure_ctf_approved_once(self) -> None:
         if self._ctf_approved:
             return
@@ -284,8 +295,14 @@ class LiveClobExchange(PaperExchange):
             raise RuntimeError("POLYGON_RPC_URL not set — required for on-chain neg-risk conversion")
         wallet = (self._config.polymarket_wallet_address or "").strip()
         pk = (self._config.wallet_private_key or "").strip()
-        # Approve NegRiskAdapter as operator on CTF (required for convertPositions)
-        ensure_ctf_approved(rpc_url=rpc, wallet_address=wallet, private_key=pk)
+        # Approve NegRiskAdapter as operator on CTF (required for convertPositions). For a Safe wallet
+        # the approval is relayed via execTransaction so the operator is granted on the Safe's tokens.
+        ensure_ctf_approved(
+            rpc_url=rpc,
+            wallet_address=wallet,
+            private_key=pk,
+            safe_address=self._safe_address_for_conversion(),
+        )
         self._ctf_approved = True
 
     def convert_neg_risk(self, event: ArbEvent, source_market_id: str, size: float) -> list[dict]:
@@ -323,7 +340,7 @@ class LiveClobExchange(PaperExchange):
         # ── one-time CTF approval ─────────────────────────────────────────────
         self._ensure_ctf_approved_once()
 
-        # ── on-chain conversion ───────────────────────────────────────────────
+        # ── on-chain conversion (relayed through the Safe when signature_type=2) ──
         rpc = (self._config.polygon_rpc_url or "").strip()
         tx_hash = convert_no_to_yes(
             rpc_url=rpc,
@@ -332,6 +349,7 @@ class LiveClobExchange(PaperExchange):
             neg_risk_market_id=nr_market_id,
             question_index=question_index,
             amount_shares=size,
+            safe_address=self._safe_address_for_conversion(),
         )
 
         logger.info(
@@ -342,7 +360,10 @@ class LiveClobExchange(PaperExchange):
             tx=tx_hash,
         )
 
-        # ── update paper ledger (mirrors PaperExchange behaviour) ─────────────
+        # ── update ledger (mirrors PaperExchange) ─────────────────────────────
+        # convertPositions is atomic, so the YES tokens exist on-chain once the tx confirms above; the
+        # ledger mirror credits them deterministically for the immediate sell legs. Actual on-chain
+        # balances are reconciled on the next cycle via _maybe_sync_live_positions_from_trades.
         return super().convert_neg_risk(event, source_market_id, size)
 
     def place_order(self, intent: OrderIntent) -> tuple[OrderRecord, list[FillRecord]]:

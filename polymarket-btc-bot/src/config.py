@@ -79,9 +79,9 @@ class Settings(BaseSettings):
     # 0=EOA (standard MetaMask wallet), 1=Magic/PolyProxy, 2=Gnosis Safe multisig.
     clob_signature_type: int = Field(default=0, alias="CLOB_SIGNATURE_TYPE")
     # Neg-risk live execution calls NegRiskAdapter.convertPositions on-chain after buying NO.
-    # With signature_type=2, outcome tokens sit in the Gnosis Safe; raw EOA-signed txs cannot
-    # convert (signer must match `from`). Polymarket documents builder relayer flows instead.
-    # Keep false unless you wire py-builder-relayer-client (or similar).
+    # With signature_type=2 the outcome tokens sit in the Gnosis Safe; convertPositions is relayed FROM
+    # the Safe via execTransaction signed by the EOA owner (neg_risk_converter.safe_exec_transaction).
+    # Enable only after verifying the Safe is 1-of-1 owned by your EOA and the EOA holds POL for gas.
     arb_allow_neg_risk_live_with_safe: bool = Field(
         default=False,
         alias="ARB_ALLOW_NEG_RISK_LIVE_WITH_SAFE",
@@ -239,6 +239,15 @@ class Settings(BaseSettings):
     arb_min_leg_touch_notional_usd: float = Field(
         default=0.0,
         alias="ARB_MIN_LEG_TOUCH_NOTIONAL_USD",
+    )
+    # Live only. Before placing a basket's legs, re-fetch fresh order books for the event and re-price
+    # the opportunity against them; abort if the edge/depth no longer clears scan() gates. The cycle's
+    # book snapshot can be many seconds (minutes on a large universe) stale by execution time, so a leg
+    # that lost depth/edge becomes a losing FOK + forced unwind. This is the single biggest live-vs-paper
+    # gap; paper has no intra-cycle drift so it is skipped there.
+    arb_revalidate_with_fresh_books: bool = Field(
+        default=True,
+        alias="ARB_REVALIDATE_WITH_FRESH_BOOKS",
     )
     # 0 = disabled. If a cycle has this many synthetic books, skip new executions (opportunities still logged as rejected).
     arb_halt_execution_if_synthetic_books_ge: int = Field(

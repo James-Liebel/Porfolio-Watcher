@@ -517,7 +517,7 @@ class ArbEngine:
                 )
                 if not approved:
                     continue
-                basket = await self._execute_opportunity(opportunity)
+                basket = await self._execute_opportunity(opportunity, basket_cap=cycle_basket_cap)
                 if basket is not None:
                     executed += 1
                     self._risk.record_execution_success()
@@ -731,7 +731,84 @@ class ArbEngine:
         for leg in buy_legs:
             leg.size = float(aligned)
 
-    async def _execute_opportunity(self, opportunity: ArbOpportunity) -> BasketRecord | None:
+    @staticmethod
+    def _match_repriced_opportunity(
+        prior: ArbOpportunity, candidates: list[ArbOpportunity]
+    ) -> ArbOpportunity | None:
+        """Find the freshly-scanned opportunity that corresponds to `prior` (same structural trade)."""
+        for cand in candidates:
+            if cand.strategy_type != prior.strategy_type:
+                continue
+            if prior.requires_conversion:
+                if cand.convert_from_market_id == prior.convert_from_market_id:
+                    return cand
+            else:
+                # Exactly one complete-set opportunity exists per event.
+                return cand
+        return None
+
+    async def _revalidate_opportunity_with_fresh_books(
+        self, opportunity: ArbOpportunity, basket_cap: float | None
+    ) -> ArbOpportunity | None:
+        """Re-fetch fresh books for this event and re-price the trade right before execution.
+
+        Returns a freshly-priced opportunity (same structural trade) if it still clears scan() gates,
+        otherwise None. Fails safe (None) if the refresh itself fails — never trade on books we could
+        not confirm. Also updates the in-memory exchange books so preflight + place_order use fresh data.
+        """
+        event = self._events.get(opportunity.event_id)
+        if event is None:
+            return opportunity
+        cap = float(basket_cap) if basket_cap else float(self._config.max_basket_notional)
+        try:
+            fresh = await self._market_data.refresh([event])
+        except Exception as exc:
+            logger.warning(
+                "arb_engine.revalidate_fetch_failed",
+                event_id=opportunity.event_id,
+                error=str(exc),
+            )
+            return None
+        self._exchange.sync_books(fresh)
+        real_fresh = {tid: b for tid, b in fresh.items() if b.source != "synthetic"}
+        candidates = self._scanner.scan([event], real_fresh, max_basket_notional=cap)
+        match = self._match_repriced_opportunity(opportunity, candidates)
+        if match is None:
+            logger.info(
+                "arb_engine.revalidate_edge_gone",
+                event_id=opportunity.event_id,
+                strategy=opportunity.strategy_type,
+                prior_edge_bps=round(opportunity.net_edge_bps, 2),
+            )
+            await self._repository.record_opportunity(
+                opportunity,
+                decision="revalidation_failed",
+                reason="edge/depth decayed on fresh book before execution",
+            )
+            return None
+        if match.net_edge_bps + 1e-9 < opportunity.net_edge_bps:
+            logger.info(
+                "arb_engine.revalidate_edge_decayed",
+                event_id=opportunity.event_id,
+                strategy=opportunity.strategy_type,
+                prior_edge_bps=round(opportunity.net_edge_bps, 2),
+                fresh_edge_bps=round(match.net_edge_bps, 2),
+            )
+        return match
+
+    async def _execute_opportunity(
+        self, opportunity: ArbOpportunity, *, basket_cap: float | None = None
+    ) -> BasketRecord | None:
+        # Live only: re-price against fresh books to avoid trading on a stale cycle snapshot.
+        if self._config.arb_live_execution and getattr(
+            self._config, "arb_revalidate_with_fresh_books", True
+        ):
+            revalidated = await self._revalidate_opportunity_with_fresh_books(
+                opportunity, basket_cap
+            )
+            if revalidated is None:
+                return None
+            opportunity = revalidated
         if not opportunity.requires_conversion:
             self._align_complete_set_buy_sizes_for_clob(opportunity)
         basket = BasketRecord(
@@ -839,9 +916,9 @@ class ArbEngine:
     async def _execute_neg_risk_basket(self, opportunity: ArbOpportunity, basket: BasketRecord) -> None:
         if not self._config.neg_risk_live_onchain_available():
             raise RuntimeError(
-                "neg-risk live execution blocked for Gnosis Safe: on-chain conversion is not wired. "
-                "Use complete_set mode, EOA (CLOB_SIGNATURE_TYPE=0), or enable ARB_ALLOW_NEG_RISK_LIVE_WITH_SAFE "
-                "after integrating Polymarket relayer conversion."
+                "neg-risk live execution blocked for Gnosis Safe. On-chain conversion is now relayed via "
+                "Safe execTransaction (see neg_risk_converter.safe_exec_transaction); set "
+                "ARB_ALLOW_NEG_RISK_LIVE_WITH_SAFE=true to enable it, or use complete_set mode / an EOA wallet."
             )
         if not opportunity.convert_from_market_id:
             raise RuntimeError("neg-risk opportunity missing source market")

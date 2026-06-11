@@ -14,8 +14,10 @@ Reference:
 
 Gnosis Safe (Polymarket CLOB signature_type=2): outcome tokens sit in the Safe. Raw
 `web3.eth.account.sign_transaction` with the EOA key cannot send `from=Safe` (signer mismatch),
-and `from=EOA` would not hold the NO tokens. Use Polymarket's builder relayer client for
-conversion, or keep neg-risk live disabled (see Settings.neg_risk_live_onchain_available).
+and `from=EOA` would not hold the NO tokens. We therefore relay the call through the Safe via
+`safe_exec_transaction` (execTransaction signed by the EOA owner of a 1-of-1 Safe); pass
+`safe_address` to `convert_no_to_yes` / `ensure_*_approved` to use it. EOA wallets (signature_type=0)
+sign directly (no Safe relay). See Settings.neg_risk_live_onchain_available.
 """
 from __future__ import annotations
 
@@ -106,6 +108,52 @@ _NR_ABI = [
     },
 ]
 
+_ZERO_ADDR = "0x0000000000000000000000000000000000000000"
+
+# Gnosis Safe v1.3.0 (the contract Polymarket deploys for signature_type=2 wallets). We only need the
+# read accessors plus getTransactionHash/execTransaction to relay a call FROM the Safe, signed by its
+# EOA owner. operation=0 (CALL); all gas/refund fields 0 so the Safe uses the outer tx gas (EOA pays).
+_SAFE_ABI = [
+    {"name": "nonce", "type": "function", "inputs": [],
+     "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view"},
+    {"name": "getThreshold", "type": "function", "inputs": [],
+     "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view"},
+    {"name": "getOwners", "type": "function", "inputs": [],
+     "outputs": [{"name": "", "type": "address[]"}], "stateMutability": "view"},
+    {
+        "name": "getTransactionHash", "type": "function",
+        "inputs": [
+            {"name": "to", "type": "address"},
+            {"name": "value", "type": "uint256"},
+            {"name": "data", "type": "bytes"},
+            {"name": "operation", "type": "uint8"},
+            {"name": "safeTxGas", "type": "uint256"},
+            {"name": "baseGas", "type": "uint256"},
+            {"name": "gasPrice", "type": "uint256"},
+            {"name": "gasToken", "type": "address"},
+            {"name": "refundReceiver", "type": "address"},
+            {"name": "_nonce", "type": "uint256"},
+        ],
+        "outputs": [{"name": "", "type": "bytes32"}], "stateMutability": "view",
+    },
+    {
+        "name": "execTransaction", "type": "function",
+        "inputs": [
+            {"name": "to", "type": "address"},
+            {"name": "value", "type": "uint256"},
+            {"name": "data", "type": "bytes"},
+            {"name": "operation", "type": "uint8"},
+            {"name": "safeTxGas", "type": "uint256"},
+            {"name": "baseGas", "type": "uint256"},
+            {"name": "gasPrice", "type": "uint256"},
+            {"name": "gasToken", "type": "address"},
+            {"name": "refundReceiver", "type": "address"},
+            {"name": "signatures", "type": "bytes"},
+        ],
+        "outputs": [{"name": "success", "type": "bool"}], "stateMutability": "payable",
+    },
+]
+
 
 def _build_w3(rpc_url: str):
     from web3 import Web3
@@ -117,24 +165,126 @@ def _build_w3(rpc_url: str):
     return w3
 
 
-def ensure_ctf_approved(rpc_url: str, wallet_address: str, private_key: str) -> None:
+def _encode_call(contract_fn) -> bytes:
+    """Encode a bound web3 ContractFunction call to raw calldata bytes (no network access)."""
+    from web3 import Web3
+
+    data_hex = contract_fn._encode_transaction_data()
+    return Web3.to_bytes(hexstr=data_hex)
+
+
+def get_safe_owners_threshold(rpc_url: str, safe_address: str) -> tuple[list[str], int]:
+    """Read-only: return (owners, threshold) for a Gnosis Safe. Used to verify the Safe is a 1-of-1
+    owned by our EOA before any live conversion."""
+    from web3 import Web3
+
+    w3 = _build_w3(rpc_url)
+    safe = w3.eth.contract(address=Web3.to_checksum_address(safe_address), abi=_SAFE_ABI)
+    owners = [Web3.to_checksum_address(o) for o in safe.functions.getOwners().call()]
+    threshold = int(safe.functions.getThreshold().call())
+    return owners, threshold
+
+
+def sign_safe_tx_hash(owner_private_key: str, safe_tx_hash: bytes) -> bytes:
+    """Produce the 65-byte Safe `signatures` blob for a 1-of-1 Safe: a raw ECDSA signature
+    (r||s||v, v in {27,28}) over the Safe transaction hash. The Safe recovers the signer with
+    ecrecover and checks ownership. Pure/deterministic — unit-tested without a chain.
     """
-    One-time per wallet: approve NegRiskAdapter as ERC1155 operator on the CTF.
+    from eth_account import Account
+
+    owner = Account.from_key(owner_private_key)
+    signed = owner.unsafe_sign_hash(safe_tx_hash)
+    return (
+        int(signed.r).to_bytes(32, "big")
+        + int(signed.s).to_bytes(32, "big")
+        + bytes([int(signed.v)])
+    )
+
+
+def safe_exec_transaction(
+    rpc_url: str,
+    safe_address: str,
+    owner_private_key: str,
+    to: str,
+    data: bytes,
+    *,
+    gas: int = 900_000,
+) -> str:
+    """Relay a single CALL from a 1-of-1 Gnosis Safe, signed by its EOA owner.
+
+    The owner signs the Safe's getTransactionHash (a raw 32-byte ECDSA signature with v in {27,28};
+    the Safe recovers ecrecover(safeTxHash, v, r, s) and checks it is an owner). The outer execTransaction
+    is sent from the EOA, which pays gas. Returns the tx hash hex.
+    """
+    from web3 import Web3
+    from eth_account import Account
+
+    w3 = _build_w3(rpc_url)
+    safe = w3.eth.contract(address=Web3.to_checksum_address(safe_address), abi=_SAFE_ABI)
+    owner = Account.from_key(owner_private_key)
+    owner_addr = Web3.to_checksum_address(owner.address)
+    to_addr = Web3.to_checksum_address(to)
+
+    safe_nonce = int(safe.functions.nonce().call())
+    args = (to_addr, 0, data, 0, 0, 0, 0, _ZERO_ADDR, _ZERO_ADDR)
+    safe_tx_hash = safe.functions.getTransactionHash(*args, safe_nonce).call()
+
+    signatures = sign_safe_tx_hash(owner_private_key, safe_tx_hash)
+
+    logger.info(
+        "neg_risk_converter.safe_exec_start",
+        safe=safe_address[:12],
+        owner=owner_addr[:12],
+        to=to_addr[:12],
+        safe_nonce=safe_nonce,
+    )
+    tx = safe.functions.execTransaction(*args, signatures).build_transaction(
+        {
+            "from": owner_addr,
+            "nonce": w3.eth.get_transaction_count(owner_addr, "pending"),
+            "chainId": _POLYGON_CHAIN_ID,
+            "gas": int(gas),
+            "gasPrice": int(w3.eth.gas_price * 1.2),
+            "value": 0,
+        }
+    )
+    signed_tx = w3.eth.account.sign_transaction(tx, private_key=owner_private_key)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+    if receipt["status"] != 1:
+        raise RuntimeError(f"Safe execTransaction reverted (tx={tx_hash.hex()})")
+    logger.info("neg_risk_converter.safe_exec_done", tx=tx_hash.hex(), to=to_addr[:12])
+    return tx_hash.hex()
+
+
+def ensure_ctf_approved(
+    rpc_url: str, wallet_address: str, private_key: str, safe_address: str | None = None
+) -> None:
+    """
+    One-time: approve NegRiskAdapter as ERC1155 operator on the CTF for the token holder.
+    When `safe_address` is set (signature_type=2), the holder is the Safe and the approval is relayed
+    via execTransaction signed by the EOA `private_key`. Otherwise the EOA approves directly.
     No-op if already approved. Safe to call repeatedly.
     """
     from web3 import Web3
 
     w3 = _build_w3(rpc_url)
-    account = Web3.to_checksum_address(wallet_address)
+    holder = Web3.to_checksum_address(safe_address or wallet_address)
     ctf = w3.eth.contract(address=Web3.to_checksum_address(_CTF_ADDRESS), abi=_CTF_ABI)
     nr_addr = Web3.to_checksum_address(_NR_ADAPTER)
 
-    already = ctf.functions.isApprovedForAll(account, nr_addr).call()
-    if already:
-        logger.info("neg_risk_converter.ctf_already_approved")
+    if ctf.functions.isApprovedForAll(holder, nr_addr).call():
+        logger.info("neg_risk_converter.ctf_already_approved", via="safe" if safe_address else "eoa")
         return
 
-    logger.info("neg_risk_converter.approving_ctf")
+    logger.info("neg_risk_converter.approving_ctf", via="safe" if safe_address else "eoa")
+    if safe_address:
+        data = _encode_call(ctf.functions.setApprovalForAll(nr_addr, True))
+        safe_exec_transaction(rpc_url, safe_address, private_key, to=_CTF_ADDRESS, data=data, gas=200_000)
+        logger.info("neg_risk_converter.ctf_approved", via="safe")
+        return
+
+    account = Web3.to_checksum_address(wallet_address)
     nonce = w3.eth.get_transaction_count(account, "pending")
     tx = ctf.functions.setApprovalForAll(nr_addr, True).build_transaction(
         {
@@ -150,35 +300,38 @@ def ensure_ctf_approved(rpc_url: str, wallet_address: str, private_key: str) -> 
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
     if receipt["status"] != 1:
         raise RuntimeError(f"setApprovalForAll reverted (tx={tx_hash.hex()})")
-    logger.info("neg_risk_converter.ctf_approved", tx=tx_hash.hex())
+    logger.info("neg_risk_converter.ctf_approved", tx=tx_hash.hex(), via="eoa")
 
 
-def ensure_usdc_approved(rpc_url: str, wallet_address: str, private_key: str) -> None:
+def ensure_usdc_approved(
+    rpc_url: str, wallet_address: str, private_key: str, safe_address: str | None = None
+) -> None:
     """
-    Approve both Polymarket CTF exchange contracts to spend USDC from the wallet.
+    Approve both Polymarket CTF exchange contracts to spend USDC from the token holder.
     Checks both native USDC and bridged USDC.e — approves whichever holds a balance.
-    No-op if already fully approved. Safe to call repeatedly.
+    When `safe_address` is set (signature_type=2), the holder is the Safe and each approve is relayed
+    via execTransaction signed by the EOA `private_key`. No-op if already fully approved.
     """
     from web3 import Web3
 
     w3 = _build_w3(rpc_url)
-    account = Web3.to_checksum_address(wallet_address)
+    holder = Web3.to_checksum_address(safe_address or wallet_address)
     spenders = [
         Web3.to_checksum_address(_CTF_EXCHANGE),
         Web3.to_checksum_address(_NR_CTF_EXCHANGE),
     ]
-    nonce = w3.eth.get_transaction_count(account, "pending")
+    nonce = w3.eth.get_transaction_count(holder, "pending") if not safe_address else 0
 
     for usdc_addr_raw in [_USDC_NATIVE, _USDC_E]:
         usdc_addr = Web3.to_checksum_address(usdc_addr_raw)
         usdc = w3.eth.contract(address=usdc_addr, abi=_ERC20_ABI)
-        bal = usdc.functions.balanceOf(account).call()
+        bal = usdc.functions.balanceOf(holder).call()
         if bal == 0:
             continue  # no balance on this USDC variant — skip
 
         logger.info("neg_risk_converter.usdc_found", address=usdc_addr_raw[:12], balance_units=bal)
         for spender in spenders:
-            current = usdc.functions.allowance(account, spender).call()
+            current = usdc.functions.allowance(holder, spender).call()
             # Allow if less than $1000 remaining (max-uint may decrease over time on some tokens)
             if current >= 1_000 * 10**_USDC_DECIMALS:
                 logger.info(
@@ -192,10 +345,19 @@ def ensure_usdc_approved(rpc_url: str, wallet_address: str, private_key: str) ->
                 "neg_risk_converter.approving_usdc",
                 usdc=usdc_addr_raw[:12],
                 spender=spender[:12],
+                via="safe" if safe_address else "eoa",
             )
+            if safe_address:
+                data = _encode_call(usdc.functions.approve(spender, _MAX_UINT256))
+                safe_exec_transaction(
+                    rpc_url, safe_address, private_key, to=usdc_addr, data=data, gas=200_000
+                )
+                logger.info("neg_risk_converter.usdc_approved", via="safe", spender=spender[:12])
+                continue
+
             tx = usdc.functions.approve(spender, _MAX_UINT256).build_transaction(
                 {
-                    "from": account,
+                    "from": holder,
                     "nonce": nonce,
                     "chainId": _POLYGON_CHAIN_ID,
                     "gas": 100_000,
@@ -218,10 +380,15 @@ def convert_no_to_yes(
     neg_risk_market_id: str,
     question_index: int,
     amount_shares: float,
+    safe_address: str | None = None,
 ) -> str:
     """
     Call NegRiskAdapter.convertPositions() — burn NO tokens on outcome at
     `question_index`, receive YES tokens on every other outcome.
+
+    When `safe_address` is set (signature_type=2), the call is relayed FROM the Safe via
+    execTransaction signed by the EOA `private_key` (the tokens live in the Safe). Otherwise the EOA
+    holds the tokens and calls convertPositions directly.
 
     Args:
         neg_risk_market_id: 0x-prefixed bytes32 from Gamma `negRiskMarketID`.
@@ -234,7 +401,6 @@ def convert_no_to_yes(
     from web3 import Web3
 
     w3 = _build_w3(rpc_url)
-    account = Web3.to_checksum_address(wallet_address)
     nr = w3.eth.contract(address=Web3.to_checksum_address(_NR_ADAPTER), abi=_NR_ABI)
 
     market_id_bytes = bytes.fromhex(neg_risk_market_id.lstrip("0x"))
@@ -255,10 +421,27 @@ def convert_no_to_yes(
         index_set=hex(index_set),
         amount_shares=round(amount_shares, 6),
         amount_units=amount_units,
+        via="safe" if safe_address else "eoa",
     )
 
+    convert_fn = nr.functions.convertPositions(market_id_bytes, index_set, amount_units)
+    if safe_address:
+        data = _encode_call(convert_fn)
+        tx_hash = safe_exec_transaction(
+            rpc_url, safe_address, private_key, to=_NR_ADAPTER, data=data, gas=900_000
+        )
+        logger.info(
+            "neg_risk_converter.convert_done",
+            tx=tx_hash,
+            question_index=question_index,
+            amount_shares=round(amount_shares, 6),
+            via="safe",
+        )
+        return tx_hash
+
+    account = Web3.to_checksum_address(wallet_address)
     nonce = w3.eth.get_transaction_count(account, "pending")
-    tx = nr.functions.convertPositions(market_id_bytes, index_set, amount_units).build_transaction(
+    tx = convert_fn.build_transaction(
         {
             "from": account,
             "nonce": nonce,
@@ -278,6 +461,7 @@ def convert_no_to_yes(
         tx=tx_hash.hex(),
         question_index=question_index,
         amount_shares=round(amount_shares, 6),
+        via="eoa",
     )
     return tx_hash.hex()
 

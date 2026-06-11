@@ -569,8 +569,15 @@ class OpportunityScanner:
         neg_tagged = 0
         neg_priceable_events = 0
         complete_priceable_events = 0
+        # "Actionable" applies the SAME gates as scan() (eligibility, strategy mode, edge floors,
+        # plausibility ceiling, min $ profit). "Priceable" ignores them. A large gap between the two
+        # (e.g. priceable=1 at 886 bps but actionable=0) means the signal can never trade and should
+        # not be chased -- the dominant cause of operator confusion. See scan() for the gate list.
+        complete_actionable_events = 0
+        neg_actionable_events = 0
         best_cs_bps: float | None = None
         best_nr_bps: float | None = None
+        mode = self._strategy_mode()
         diag_mn = (
             float(max_basket_notional)
             if max_basket_notional is not None
@@ -585,6 +592,15 @@ class OpportunityScanner:
             if w is not None:
                 complete_priceable_events += 1
                 best_cs_bps = w.net_edge_bps if best_cs_bps is None else max(best_cs_bps, w.net_edge_bps)
+
+            if mode in {"both", "complete_set"} and self._complete_set_opportunities(
+                event, books, diag_mn
+            ):
+                complete_actionable_events += 1
+            if mode in {"both", "neg_risk"} and self._neg_risk_opportunities(
+                event, books, diag_mn
+            ):
+                neg_actionable_events += 1
 
             if self._neg_risk_event_eligible(event):
                 raw_edges: list[float] = []
@@ -617,9 +633,12 @@ class OpportunityScanner:
 
         return {
             "events_in_universe": len(events),
+            "strategy_mode": mode,
             "neg_risk_tagged_events": neg_tagged,
             "neg_risk_priceable_events": neg_priceable_events,
             "complete_set_priceable_events": complete_priceable_events,
+            "complete_set_actionable_events": complete_actionable_events,
+            "neg_risk_actionable_events": neg_actionable_events,
             "max_raw_complete_set_edge_bps": best_cs_bps,
             "max_raw_neg_risk_edge_bps": best_nr_bps,
             "min_complete_set_edge_bps_config": min_cs,
